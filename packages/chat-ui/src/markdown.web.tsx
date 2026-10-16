@@ -33,6 +33,7 @@ import {
   remoteMarkdownImage,
   sanitizeMarkdownUrl,
   useLinkFavicon,
+  useLinkPreview,
 } from "./markdown";
 import { useMarkdownLinkCopy } from "./markdown-link-prompt";
 import { MarkdownTable, MarkdownTableSourceContext } from "./markdown-table";
@@ -354,6 +355,50 @@ function LinkFavicon({ href }: { href: string }) {
   );
 }
 
+/**
+ * A link's page metadata as a card, drawn under the link. The card is itself the link, so the
+ * whole surface is clickable and goes through the same external-link confirmation.
+ */
+function LinkPreviewCard({ href }: { href: string }) {
+  // A reply still streaming may hold a half-written host; wait until it settles, like favicons.
+  const paused = useContext(LinkFaviconsPausedContext);
+  const preview = useLinkPreview(paused ? undefined : href);
+  const loadRemoteImages = useContext(RemoteImagesContext);
+  if (!preview) return null;
+  return (
+    <ConfirmableAnchor href={preview.url} className="rk-chat-preview">
+      {/* The remote image loads only for a reader who already opted into remote images. */}
+      {preview.imageUrl && loadRemoteImages ? (
+        <img className="rk-chat-preview-image" src={preview.imageUrl} alt="" loading="lazy" />
+      ) : null}
+      <span className="rk-chat-preview-body">
+        <span className="rk-chat-preview-site">
+          {preview.siteName ?? linkFaviconOrigin(preview.url) ?? ""}
+        </span>
+        <span className="rk-chat-preview-title">{preview.title}</span>
+        {preview.description ? (
+          <span className="rk-chat-preview-description">{preview.description}</span>
+        ) : null}
+      </span>
+    </ConfirmableAnchor>
+  );
+}
+
+/**
+ * The one link a paragraph consists of, or undefined when the paragraph says anything else.
+ * Only a link standing alone earns a card: a link inside a sentence is already part of the prose.
+ */
+function soleLinkHref(node?: MarkdownHast): string | undefined {
+  const children = (node?.children ?? []).filter(
+    (child) => !(child.type === "text" && !child.value?.trim()),
+  );
+  if (children.length !== 1) return undefined;
+  const only = children[0];
+  if (only?.type !== "element" || only.tagName !== "a") return undefined;
+  const href = hastString(only.properties?.href);
+  return href && linkFaviconOrigin(href) ? href : undefined;
+}
+
 /** A link to a website, drawn with its site icon before the label. */
 function WebsiteLink({
   href,
@@ -401,6 +446,17 @@ function MarkdownAnchor({
 
 const components: Components = {
   a: MarkdownAnchor,
+  p({ node, children, ...props }) {
+    const href = soleLinkHref(node);
+    if (!href) return <p {...props}>{children}</p>;
+    // A card is block content, so it cannot live inside the paragraph element.
+    return (
+      <div className="rk-chat-link-preview">
+        <p {...props}>{children}</p>
+        <LinkPreviewCard href={href} />
+      </div>
+    );
+  },
   img({ node: _node, src, alt, title }) {
     return (
       <MarkdownImage src={typeof src === "string" ? src : undefined} alt={alt} title={title} />
@@ -475,7 +531,7 @@ export const ChatMarkdown = memo(function ChatMarkdown({
   );
 });
 
-export type { ChatMarkdownProps, LinkFavicons } from "./markdown";
-export { LinkFaviconsContext, RemoteImagesContext } from "./markdown";
+export type { ChatMarkdownProps, LinkFavicons, LinkPreview, LinkPreviews } from "./markdown";
+export { LinkFaviconsContext, LinkPreviewsContext, RemoteImagesContext } from "./markdown";
 
 export { MarkdownLinkPromptProvider } from "./markdown-link-prompt";

@@ -5,11 +5,12 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
-import type { LinkFavicons } from "./markdown.web";
+import type { LinkFavicons, LinkPreviews } from "./markdown.web";
 import {
   ChatMarkdown,
   LinkFaviconsContext,
   LinkifiedText,
+  LinkPreviewsContext,
   RemoteImagesContext,
 } from "./markdown.web";
 
@@ -558,5 +559,164 @@ describe("web external link confirmation", () => {
     expect(open).not.toHaveBeenCalled();
     open.mockRestore();
     await view.cleanup();
+  });
+});
+
+describe("web markdown link previews", () => {
+  const preview = {
+    url: "https://example.test/docs",
+    title: "Deploying Rakazo",
+    description: "A self-hosted guide",
+    siteName: "Example Docs",
+  };
+
+  function previews(load: LinkPreviews["load"]): LinkPreviews {
+    return { endpoint: "test", load };
+  }
+
+  async function renderWithPreviews(markdown: string, load: LinkPreviews["load"]) {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <LinkPreviewsContext.Provider value={previews(load)}>
+          <ChatMarkdown>{markdown}</ChatMarkdown>
+        </LinkPreviewsContext.Provider>,
+      );
+    });
+    // Let the load promise settle inside act so the card is committed.
+    await act(async () => {});
+    return {
+      container,
+      cleanup: async () => {
+        await act(async () => {
+          root.unmount();
+        });
+        container.remove();
+      },
+    };
+  }
+
+  it("draws a card under a link that stands alone in a paragraph", async () => {
+    const load = vi.fn().mockResolvedValue({ preview });
+    const view = await renderWithPreviews("[Docs](https://example.test/card)", load);
+    const card = view.container.querySelector("a.rk-chat-preview");
+    // The card links to the URL the server resolved, which is the page it actually read.
+    expect(card?.getAttribute("href")).toBe(preview.url);
+    expect(view.container.querySelector(".rk-chat-preview-title")?.textContent).toBe(
+      "Deploying Rakazo",
+    );
+    expect(view.container.querySelector(".rk-chat-preview-site")?.textContent).toBe("Example Docs");
+    expect(view.container.querySelector(".rk-chat-preview-description")?.textContent).toBe(
+      "A self-hosted guide",
+    );
+    // The link itself is still rendered as a link.
+    expect(view.container.querySelector("a.rk-chat-link")).not.toBeNull();
+    await view.cleanup();
+  });
+
+  it("draws no card for a link inside a sentence", async () => {
+    const load = vi.fn().mockResolvedValue({ preview });
+    const view = await renderWithPreviews(
+      "See [the docs](https://example.test/docs) for details.",
+      load,
+    );
+    expect(view.container.querySelector("a.rk-chat-preview")).toBeNull();
+    expect(load).not.toHaveBeenCalled();
+    await view.cleanup();
+  });
+
+  it("draws no card for a non-web link", async () => {
+    const load = vi.fn().mockResolvedValue({ preview });
+    const view = await renderWithPreviews("[mail](mailto:a@example.test)", load);
+    expect(view.container.querySelector("a.rk-chat-preview")).toBeNull();
+    expect(load).not.toHaveBeenCalled();
+    await view.cleanup();
+  });
+
+  it("shows nothing when the page has no metadata", async () => {
+    const load = vi.fn().mockResolvedValue({ preview: null });
+    const view = await renderWithPreviews("[Bare](https://example.test/bare)", load);
+    expect(view.container.querySelector("a.rk-chat-preview")).toBeNull();
+    // The link itself still renders.
+    expect(view.container.querySelector("a.rk-chat-link")).not.toBeNull();
+    await view.cleanup();
+  });
+
+  it("keeps the remote image out until the reader opts into remote images", async () => {
+    const withImage = { ...preview, imageUrl: "https://example.test/cover.png" };
+    const load = vi.fn().mockResolvedValue({ preview: withImage });
+    const view = await renderWithPreviews("[Docs](https://example.test/image-out)", load);
+    expect(view.container.querySelector(".rk-chat-preview-image")).toBeNull();
+    await view.cleanup();
+  });
+
+  it("shows the remote image once the reader has opted in", async () => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    const withImage = { ...preview, imageUrl: "https://example.test/cover.png" };
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <RemoteImagesContext.Provider value={true}>
+          <LinkPreviewsContext.Provider
+            value={previews(vi.fn().mockResolvedValue({ preview: withImage }))}
+          >
+            <ChatMarkdown>{"[Docs](https://example.test/image-in)"}</ChatMarkdown>
+          </LinkPreviewsContext.Provider>
+        </RemoteImagesContext.Provider>,
+      );
+    });
+    await act(async () => {});
+    expect(container.querySelector(".rk-chat-preview-image")?.getAttribute("src")).toBe(
+      "https://example.test/cover.png",
+    );
+    await act(async () => {
+      root.unmount();
+    });
+    container.remove();
+  });
+
+  it("loads one preview per url even when several messages link to it", async () => {
+    const load = vi.fn().mockResolvedValue({ preview });
+    const first = await renderWithPreviews("[Docs](https://example.test/once)", load);
+    const second = await renderWithPreviews("[Docs](https://example.test/once)", load);
+    expect(load).toHaveBeenCalledTimes(1);
+    await first.cleanup();
+    await second.cleanup();
+  });
+
+  it("asks again after a busy answer instead of remembering a miss", async () => {
+    const load = vi
+      .fn()
+      .mockResolvedValueOnce({ preview: null, retry: true })
+      .mockResolvedValueOnce({ preview });
+    const first = await renderWithPreviews("[Docs](https://example.test/busy)", load);
+    expect(first.container.querySelector("a.rk-chat-preview")).toBeNull();
+    await first.cleanup();
+    const second = await renderWithPreviews("[Docs](https://example.test/busy)", load);
+    expect(second.container.querySelector("a.rk-chat-preview")).not.toBeNull();
+    expect(load).toHaveBeenCalledTimes(2);
+    await second.cleanup();
+  });
+
+  it("renders no card when the surface has no preview source", async () => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(<ChatMarkdown>{"[Docs](https://example.test/none)"}</ChatMarkdown>);
+    });
+    expect(container.querySelector("a.rk-chat-preview")).toBeNull();
+    // The link is still a link, so a surface without previews degrades to the plain link.
+    expect(container.querySelector("a.rk-chat-link")).not.toBeNull();
+    await act(async () => {
+      root.unmount();
+    });
+    container.remove();
   });
 });

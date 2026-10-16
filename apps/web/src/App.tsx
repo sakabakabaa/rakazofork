@@ -1,6 +1,10 @@
 import { Trans, useLingui } from "@lingui/react/macro";
-import type { LinkFavicons } from "@rakazo/chat-ui/web";
-import { LinkFaviconsContext, RemoteImagesContext } from "@rakazo/chat-ui/web";
+import type { LinkFavicons, LinkPreviews } from "@rakazo/chat-ui/web";
+import {
+  LinkFaviconsContext,
+  LinkPreviewsContext,
+  RemoteImagesContext,
+} from "@rakazo/chat-ui/web";
 import { LOCAL_SETTINGS_PAGE } from "@rakazo/contracts";
 import { Button, Skeleton } from "@rakazo/ui-web";
 import {
@@ -64,6 +68,11 @@ const linkFavicons: LinkFavicons = {
   load: (origin) => rpc.links.favicon({ origin }),
 };
 
+// Link preview cards come from the same place, for the same reason.
+const linkPreviews: LinkPreviews = {
+  load: (url) => rpc.links.preview({ url }),
+};
+
 export function App() {
   const loadRemoteImages = useSyncExternalStore(
     subscribeRemoteImages,
@@ -73,15 +82,17 @@ export function App() {
   return (
     <RemoteImagesContext.Provider value={loadRemoteImages}>
       <LinkFaviconsContext.Provider value={linkFavicons}>
-        <ErrorBoundary fallback={<AppFailed />}>
-          {window.location.pathname === SSO_CALLBACK_PATH ? (
-            <SsoCallbackPage />
-          ) : window.location.pathname === LOCAL_SETTINGS_PAGE ? (
-            <LocalSettingsPage />
-          ) : (
-            <SessionApp />
-          )}
-        </ErrorBoundary>
+        <LinkPreviewsContext.Provider value={linkPreviews}>
+          <ErrorBoundary fallback={<AppFailed />}>
+            {window.location.pathname === SSO_CALLBACK_PATH ? (
+              <SsoCallbackPage />
+            ) : window.location.pathname === LOCAL_SETTINGS_PAGE ? (
+              <LocalSettingsPage />
+            ) : (
+              <SessionApp />
+            )}
+          </ErrorBoundary>
+        </LinkPreviewsContext.Provider>
       </LinkFaviconsContext.Provider>
     </RemoteImagesContext.Provider>
   );

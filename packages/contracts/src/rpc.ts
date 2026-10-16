@@ -899,6 +899,29 @@ export const appContract = {
       // The longest origin: a scheme, a 253-character host name and a port.
       .input(z.object({ origin: z.string().max("https://".length + 253 + ":65535".length) }))
       .output(z.object({ icon: z.string().nullable(), retry: z.boolean().optional() })),
+    /**
+     * A preview card for a link, resolved and cached by the server from the page's own metadata.
+     * A null `preview` means the page had nothing worth showing; `retry` means the server was too
+     * busy to look, which is not the same as a page with no metadata.
+     */
+    preview: oc
+      // A practical ceiling for a pasted link; longer values are not real pages.
+      .input(z.object({ url: z.string().max(2_000) }))
+      .output(
+        z.object({
+          preview: z
+            .object({
+              url: z.string(),
+              title: z.string(),
+              description: z.string().optional(),
+              siteName: z.string().optional(),
+              /** Loaded only by readers who opted into remote images. */
+              imageUrl: z.string().optional(),
+            })
+            .nullable(),
+          retry: z.boolean().optional(),
+        }),
+      ),
   },
   runs: {
     list: oc.input(z.object({ filter: z.enum(["active", "recent"]) })).output(RunsListOutputSchema),
