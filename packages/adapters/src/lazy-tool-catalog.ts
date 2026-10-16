@@ -30,11 +30,14 @@ export type CatalogSearchHit = {
 };
 
 export type CatalogSearchResult =
-  | { tools: CatalogSearchHit[] }
+  | { tools: CatalogSearchHit[]; hint?: string }
   | { index: Array<{ group: string; names: string[] }> }
   | { groups: Array<{ group: string; count: number }>; hint: string }
   | { group: string; names: string[]; error?: string }
   | { group: string; count: number; hint: string };
+
+const EMPTY_SEARCH_HINT =
+  "No directly matching tool was found in this catalog. This does not mean the provider is disconnected. Try broader capability or source terms, list the available sources, or use a returned discovery/search tool to find nested actions. Report a connection problem only after an explicit authentication or connection error.";
 
 /**
  * Build the three catalog wrapper tools (`<prefix>_search_tools`, `<prefix>_load_tool`,
@@ -51,8 +54,8 @@ export function lazyCatalogTools(
   const indexText = formatNameIndexText(groupedNames(entries));
   const embedIndex = indexText.length > 0 && fitsNameIndexBudget(groupedNames(entries));
   const searchDescription = embedIndex
-    ? `Search connected ${label} tools. Empty query lists names by source. Pass group to expand one source.\n${indexText}`
-    : `Search connected ${label} tools. Empty query lists sources. Pass group to list names in one source, or query to search.`;
+    ? `Search connected ${label} tools by the user's goal, provider, or action name. Matching uses words, not only exact phrases. Empty query lists names by source. Pass group to expand one source. If a match is a discovery/search tool, use it to find actions nested behind that provider. A search with no matches does not mean a source is disconnected.\n${indexText}`
+    : `Search connected ${label} tools by the user's goal, provider, or action name. Matching uses words, not only exact phrases. Empty query lists sources. Pass group to list names in one source, or query to search. If a match is a discovery/search tool, use it to find actions nested behind that provider. A search with no matches does not mean a source is disconnected.`;
   return [
     {
       name: `${prefix}_search_tools`,
@@ -63,7 +66,8 @@ export function lazyCatalogTools(
           query: {
             type: "string",
             maxLength: MAX_QUERY_LENGTH,
-            description: "Words describing the tool to find. Omit to list names by source.",
+            description:
+              "Provider, action, or capability words. Search is token-based; try a broader term if no result appears. Omit to list names by source.",
           },
           group: {
             type: "string",
@@ -192,24 +196,25 @@ export function searchCatalog(
   const limit = Number.isFinite(requested)
     ? Math.max(1, Math.min(TOOL_SEARCH_LIMIT, Math.trunc(requested)))
     : TOOL_SEARCH_LIMIT;
-  return {
-    tools: scoped
-      .map((entry) => ({ entry, score: catalogScore(entry, query) }))
-      .filter(({ score }) => score < 4)
-      .sort(
-        (left, right) =>
-          left.score - right.score ||
-          left.entry.tool.name.localeCompare(right.entry.tool.name) ||
-          left.entry.id.localeCompare(right.entry.id),
-      )
-      .slice(0, limit)
-      .map(({ entry }) => ({
-        id: entry.id,
-        name: entry.tool.name,
-        description: entry.tool.description.slice(0, MAX_DESCRIPTION_LENGTH),
-        readOnly: entry.tool.readOnly === true,
-      })),
-  };
+  const matched = scoped
+    .map((entry) => ({ entry, score: catalogScore(entry, query) }))
+    .filter(({ score }) => score < 5)
+    .sort(
+      (left, right) =>
+        left.score - right.score ||
+        left.entry.tool.name.localeCompare(right.entry.tool.name) ||
+        left.entry.id.localeCompare(right.entry.id),
+    )
+    .slice(0, limit)
+    .map(({ entry }) => ({
+      id: entry.id,
+      name: entry.tool.name,
+      description: entry.tool.description.slice(0, MAX_DESCRIPTION_LENGTH),
+      readOnly: entry.tool.readOnly === true,
+    }));
+  return matched.length > 0
+    ? { tools: matched }
+    : { tools: [], hint: EMPTY_SEARCH_HINT };
 }
 
 export function loadCatalogEntry(
@@ -385,9 +390,34 @@ function catalogScore(entry: CatalogEntry, query: string): number {
   const shortName = catalogShortName(entry).toLowerCase();
   const description = entry.tool.description.toLowerCase();
   const group = entry.group.toLowerCase();
+  const queryTokens = searchTokens(query);
+  const nameTokens = new Set(searchTokens(`${name} ${shortName}`));
+  const groupTokens = new Set(searchTokens(group));
+  const descriptionTokens = new Set(searchTokens(description));
+  const searchableTokens = new Set([...nameTokens, ...groupTokens, ...descriptionTokens]);
+  const nameMatches = queryTokens.filter((token) => nameTokens.has(token)).length;
+  const sourceMatches = queryTokens.filter((token) => groupTokens.has(token)).length;
+  const identityMatches = queryTokens.filter(
+    (token) => nameTokens.has(token) || groupTokens.has(token),
+  ).length;
+  const totalMatches = queryTokens.filter((token) => searchableTokens.has(token)).length;
   if (name === query || shortName === query) return 0;
   if (name.startsWith(query) || shortName.startsWith(query)) return 1;
   if (name.includes(query) || shortName.includes(query) || group.includes(query)) return 2;
   if (description.includes(query)) return 3;
-  return 4;
+  if (queryTokens.length > 0 && nameMatches === queryTokens.length) return 0;
+  if (queryTokens.length > 0 && sourceMatches === queryTokens.length) return 1;
+  if (queryTokens.length > 0 && identityMatches === queryTokens.length) return 1;
+  if (queryTokens.length > 0 && totalMatches === queryTokens.length) return 2;
+  // Preserve useful provider/action overlap, including generic discovery tools
+  // exposed by connectors whose actual actions live in a nested catalog.
+  if (totalMatches > 0) return 3 + (queryTokens.length - totalMatches) / queryTokens.length;
+  return 5;
+}
+
+function searchTokens(value: string): string[] {
+  return value
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter((token) => token.length > 1);
 }

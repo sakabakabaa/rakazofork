@@ -5,11 +5,12 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
-import type { LinkFavicons } from "./markdown.web";
+import type { LinkFavicons, LinkPreviews } from "./markdown.web";
 import {
   ChatMarkdown,
   LinkFaviconsContext,
   LinkifiedText,
+  LinkPreviewsContext,
   RemoteImagesContext,
 } from "./markdown.web";
 
@@ -465,6 +466,49 @@ async function render(node: ReactNode) {
 }
 
 describe("web external link confirmation", () => {
+  it("loads a preview card for one link in a bot paragraph", async () => {
+    const load = vi.fn(async (url: string) => ({
+      preview: {
+        url,
+        title: "Rakazo on GitHub",
+        description: "A self-hosted agent workspace.",
+        siteName: "GitHub",
+      },
+    }));
+    const linkPreviews: LinkPreviews = { load };
+    const view = await render(
+      <LinkPreviewsContext.Provider value={linkPreviews}>
+        <ChatMarkdown>{"Source: https://github.com/elie222/rakazo"}</ChatMarkdown>
+      </LinkPreviewsContext.Provider>,
+    );
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(load).toHaveBeenCalledWith("https://github.com/elie222/rakazo");
+    expect(view.container.querySelector(".rk-chat-preview-title")?.textContent).toBe(
+      "Rakazo on GitHub",
+    );
+    await view.cleanup();
+  });
+
+  it("loads a preview card for a single link in user text", async () => {
+    const load = vi.fn(async (url: string) => ({
+      preview: { url, title: "Example", siteName: "example.test" },
+    }));
+    const linkPreviews: LinkPreviews = { load };
+    const view = await render(
+      <LinkPreviewsContext.Provider value={linkPreviews}>
+        <LinkifiedText>{"See https://example.test/docs"}</LinkifiedText>
+      </LinkPreviewsContext.Provider>,
+    );
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(load).toHaveBeenCalledWith("https://example.test/docs");
+    expect(view.container.querySelector(".rk-chat-preview-title")?.textContent).toBe("Example");
+    await view.cleanup();
+  });
+
   it("asks before an external bot link and opens it only after confirmation", async () => {
     const open = vi.spyOn(window, "open").mockReturnValue(null);
     const view = await render(

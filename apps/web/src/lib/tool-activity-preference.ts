@@ -31,11 +31,11 @@ function notify() {
   for (const listener of listeners) listener();
 }
 
-/** Only a saved "on" shows tool cards. Missing or unreadable storage stays off so chats stay clean. */
+/** Activity summaries are visible by default; an explicit saved "off" hides them. */
 export function normalizeToolActivityPreference(
   raw: string | null | undefined,
 ): ToolActivityPreference {
-  return raw?.trim().toLowerCase() === "on" ? "on" : "off";
+  return raw?.trim().toLowerCase() === "off" ? "off" : "on";
 }
 
 export function toolActivityEnabled(preference: ToolActivityPreference = "off"): boolean {

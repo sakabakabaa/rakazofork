@@ -33,6 +33,7 @@ import {
   remoteMarkdownImage,
   sanitizeMarkdownUrl,
   useLinkFavicon,
+  useLinkPreview,
 } from "./markdown";
 import { useMarkdownLinkCopy } from "./markdown-link-prompt";
 import { MarkdownTable, MarkdownTableSourceContext } from "./markdown-table";
@@ -354,6 +355,66 @@ function LinkFavicon({ href }: { href: string }) {
   );
 }
 
+/**
+ * A link's page metadata as a card, drawn under the link. The card is itself the link, so the
+ * whole surface is clickable and goes through the same external-link confirmation.
+ */
+function LinkPreviewCard({ href }: { href: string }) {
+  // A reply still streaming may hold a half-written host; wait until it settles, like favicons.
+  const paused = useContext(LinkFaviconsPausedContext);
+  const preview = useLinkPreview(paused ? undefined : href);
+  const loadRemoteImages = useContext(RemoteImagesContext);
+  if (!preview) return null;
+  return (
+    <ConfirmableAnchor href={preview.url} className="rk-chat-preview">
+      {/* The remote image loads only for a reader who already opted into remote images. */}
+      {preview.imageUrl && loadRemoteImages ? (
+        <img className="rk-chat-preview-image" src={preview.imageUrl} alt="" loading="lazy" />
+      ) : null}
+      <span className="rk-chat-preview-body">
+        <span className="rk-chat-preview-site">
+          {preview.siteName ?? linkFaviconOrigin(preview.url) ?? ""}
+        </span>
+        <span className="rk-chat-preview-title">{preview.title}</span>
+        {preview.description ? (
+          <span className="rk-chat-preview-description">{preview.description}</span>
+        ) : null}
+      </span>
+    </ConfirmableAnchor>
+  );
+}
+
+/** Every anchor in a paragraph, so a paragraph carrying more than one link can be left alone. */
+function paragraphAnchors(node?: MarkdownHast): string[] {
+  const found: string[] = [];
+  const walk = (current: MarkdownHast | undefined) => {
+    for (const child of current?.children ?? []) {
+      if (child.type === "element" && child.tagName === "a") {
+        const href = hastString(child.properties?.href);
+        if (href) found.push(href);
+      }
+      walk(child);
+    }
+  };
+  walk(node);
+  return found;
+}
+
+/**
+ * The link a paragraph is about, or undefined when there is nothing to unfurl.
+ *
+ * A paragraph carrying exactly one web link earns a card, whether the link stands alone or is
+ * introduced by a few words ("Source: <link>"). A paragraph with several links is left as prose:
+ * one card could not represent them, and picking a winner would be arbitrary.
+ *
+ * A bare domain is never a link here — `linkifyExplicitUrls` sets `fuzzyLink: false` on purpose,
+ * because fuzzy matching would also link file names like `setup.py`.
+ */
+function soleLinkHref(node?: MarkdownHast): string | undefined {
+  const anchors = paragraphAnchors(node).filter((href) => linkFaviconOrigin(href));
+  return anchors.length === 1 ? anchors[0] : undefined;
+}
+
 /** A link to a website, drawn with its site icon before the label. */
 function WebsiteLink({
   href,
@@ -401,6 +462,17 @@ function MarkdownAnchor({
 
 const components: Components = {
   a: MarkdownAnchor,
+  p({ node, children, ...props }) {
+    const href = soleLinkHref(node);
+    if (!href) return <p {...props}>{children}</p>;
+    // A card is block content, so it cannot live inside the paragraph element.
+    return (
+      <div className="rk-chat-link-preview">
+        <p {...props}>{children}</p>
+        <LinkPreviewCard href={href} />
+      </div>
+    );
+  },
   img({ node: _node, src, alt, title }) {
     return (
       <MarkdownImage src={typeof src === "string" ? src : undefined} alt={alt} title={title} />
@@ -420,9 +492,13 @@ const components: Components = {
 
 export function LinkifiedText({ children }: { children: string }) {
   const { request, dialog } = useExternalLinkConfirm();
+  const parts = plainTextLinkParts(children);
+  // A message about exactly one link earns a card, the same as a bot paragraph.
+  const links = parts.filter((part) => part.type === "link" && linkFaviconOrigin(part.href));
+  const soleHref = links.length === 1 && links[0]?.type === "link" ? links[0].href : undefined;
   return (
     <ConfirmLinkContext.Provider value={request}>
-      {plainTextLinkParts(children).map((part, index) =>
+      {parts.map((part, index) =>
         part.type === "text" ? (
           part.value
         ) : linkFaviconOrigin(part.href) ? (
@@ -435,6 +511,7 @@ export function LinkifiedText({ children }: { children: string }) {
           </ConfirmableAnchor>
         ),
       )}
+      {soleHref ? <LinkPreviewCard href={soleHref} /> : null}
       {dialog}
     </ConfirmLinkContext.Provider>
   );
@@ -475,7 +552,7 @@ export const ChatMarkdown = memo(function ChatMarkdown({
   );
 });
 
-export type { ChatMarkdownProps, LinkFavicons } from "./markdown";
-export { LinkFaviconsContext, RemoteImagesContext } from "./markdown";
+export type { ChatMarkdownProps, LinkFavicons, LinkPreview, LinkPreviews } from "./markdown";
+export { LinkFaviconsContext, LinkPreviewsContext, RemoteImagesContext } from "./markdown";
 
 export { MarkdownLinkPromptProvider } from "./markdown-link-prompt";

@@ -48,22 +48,32 @@ describe("tool step count", () => {
 });
 
 describe("tool card render decisions", () => {
-  it("renders only steps blocks, and only when the preference is on", () => {
+  it("renders completed steps and live activity only when enabled", () => {
     expect(shouldRenderToolCard(stepsBlock, true)).toBe(true);
     expect(shouldRenderToolCard(stepsBlock, false)).toBe(false);
     expect(shouldRenderToolCard(textBlock, true)).toBe(false);
     expect(shouldRenderToolCard(liveActivity, true)).toBe(false);
+    expect(shouldRenderToolCard(liveActivity, true, true)).toBe(true);
+    expect(shouldRenderToolCard(liveActivity, false, true)).toBe(false);
   });
 
-  it("keeps text order and drops hidden activity per preference", () => {
+  it("keeps completed history in messages but includes activity on live messages", () => {
     const blocks = [textBlock, stepsBlock, liveActivity, narration];
     expect(renderableMessageBlocks(blocks, true)).toEqual([textBlock, stepsBlock, narration]);
     expect(renderableMessageBlocks(blocks, false)).toEqual([textBlock, narration]);
+    expect(renderableMessageBlocks(blocks, true, true)).toEqual([
+      textBlock,
+      stepsBlock,
+      liveActivity,
+      narration,
+    ]);
   });
 
-  it("never surfaces a progress block marked as activity", () => {
+  it("surfaces an activity-only live message when enabled", () => {
     expect(messageHasVisibleBlocks([liveActivity], true)).toBe(false);
     expect(messageHasVisibleBlocks([liveActivity], false)).toBe(false);
+    expect(messageHasVisibleBlocks([liveActivity], true, true)).toBe(true);
+    expect(messageHasVisibleBlocks([liveActivity], false, true)).toBe(false);
   });
 
   it("keeps a steps-only message visible only when the preference is on", () => {
@@ -82,8 +92,9 @@ describe("tool-only narration", () => {
 
   it("is false once the bot has written something, or when tool cards are hidden", () => {
     expect(isToolOnlyNarration([stepsBlock, textBlock], true)).toBe(false);
-    expect(isToolOnlyNarration([narration, liveActivity, stepsBlock], true)).toBe(false);
+    expect(isToolOnlyNarration([narration, liveActivity, stepsBlock], true, true)).toBe(false);
     expect(isToolOnlyNarration([liveActivity, stepsBlock], false)).toBe(false);
     expect(isToolOnlyNarration([liveActivity], true)).toBe(false);
+    expect(isToolOnlyNarration([liveActivity], true, true)).toBe(true);
   });
 });

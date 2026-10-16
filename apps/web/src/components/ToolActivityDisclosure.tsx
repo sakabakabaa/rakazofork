@@ -1,13 +1,45 @@
 import { Plural } from "@lingui/react/macro";
 import type { ThreadMessage } from "@rakazo/contracts";
-import { ChevronRight } from "lucide-react";
+import {
+  Bot,
+  Check,
+  ChevronRight,
+  FileText,
+  Globe,
+  LoaderCircle,
+  type LucideIcon,
+  Mail,
+  MessageSquare,
+  MousePointer2,
+  Pencil,
+  Search,
+  Terminal,
+  Wrench,
+} from "lucide-react";
 import type { ReactNode } from "react";
-import { formatToolActivityDuration, toolStepCount } from "../lib/tool-activity-view";
+import { formatToolActivityDuration } from "../lib/tool-activity-view";
 
 type ToolStep = Extract<ThreadMessage["blocks"][number], { kind: "steps" }>["steps"][number];
 
-/** While a run is live, only the most recent steps are listed so a long run does not push the chat down. */
-export const LIVE_TOOL_STEP_WINDOW = 6;
+function toolIcon(label: string): LucideIcon {
+  const name = label.toLowerCase();
+  if (name.includes("search")) return Search;
+  if (name.includes("browser") || name.includes("web fetch") || name.includes("navigate")) {
+    return Globe;
+  }
+  if (name.includes("shell") || name.includes("terminal") || name.includes("command")) {
+    return Terminal;
+  }
+  if (name.includes("file") || name.includes("read") || name.includes("write")) return FileText;
+  if (name.includes("edit") || name.includes("update")) return Pencil;
+  if (name.includes("click") || name.includes("computer")) return MousePointer2;
+  if (name.includes("mail") || name.includes("email")) return Mail;
+  if (name.includes("message") || name.includes("slack") || name.includes("whatsapp")) {
+    return MessageSquare;
+  }
+  if (name.includes("agent") || name.includes("subagent")) return Bot;
+  return Wrench;
+}
 
 export function ToolSteps({
   steps,
@@ -19,8 +51,15 @@ export function ToolSteps({
   /** Show only the last `limit` steps, with a count of the earlier ones above them. */
   limit?: number;
 }) {
-  const hidden = limit !== undefined && steps.length > limit ? steps.length - limit : 0;
-  const shown = hidden > 0 ? steps.slice(hidden) : steps;
+  const actions = steps.flatMap((step, index) =>
+    Array.from({ length: Math.max(1, step.count) }, (_, occurrence) => ({
+      step,
+      index,
+      occurrence,
+    })),
+  );
+  const hidden = limit !== undefined && actions.length > limit ? actions.length - limit : 0;
+  const shown = hidden > 0 ? actions.slice(hidden) : actions;
   return (
     <div className="space-y-0.5" data-testid="tool-rows">
       {hidden > 0 ? (
@@ -28,17 +67,25 @@ export function ToolSteps({
           <Plural value={hidden} one="+# earlier step" other="+# earlier steps" />
         </div>
       ) : null}
-      {shown.map((step, offset) => {
-        const index = hidden + offset;
-        const isCurrent = index === currentIndex;
+      {shown.map(({ step, index, occurrence }) => {
+        const isCurrent = index === currentIndex && occurrence === step.count - 1;
+        const Icon = toolIcon(step.label);
         return (
-          <div key={index} className="flex min-w-0 items-center gap-2 leading-5">
-            <span
-              className={`text-[12px] ${isCurrent ? "text-warning" : "text-success"}`}
-              style={{ animation: isCurrent ? "rkPulse 1.2s ease-in-out infinite" : undefined }}
-            >
-              {isCurrent ? "◷" : "✓"}
-            </span>
+          <div
+            key={`${index}-${occurrence}`}
+            className="flex min-w-0 items-center gap-2 leading-5"
+            data-testid="tool-action"
+          >
+            {isCurrent ? (
+              <LoaderCircle
+                aria-hidden
+                size={13}
+                className="shrink-0 animate-spin text-warning motion-reduce:animate-none"
+              />
+            ) : (
+              <Check aria-hidden size={13} className="shrink-0 text-success" />
+            )}
+            <Icon aria-hidden size={13} className="shrink-0 text-muted-foreground" />
             <span
               className={`min-w-0 flex-1 truncate text-[13px] ${
                 isCurrent ? "text-foreground" : "text-muted-foreground"
@@ -46,7 +93,6 @@ export function ToolSteps({
               title={step.label}
             >
               {step.label}
-              {step.count > 1 ? ` ×${step.count}` : ""}
             </span>
           </div>
         );
@@ -56,33 +102,27 @@ export function ToolSteps({
 }
 
 /**
- * The tool-activity card. It starts open while the run is live and folds when the run
- * ends: the `key` swap remounts the element, so `open` restarts from `live`. A manual
- * collapse during the run holds, because React only rewrites `open` when the prop
- * changes, and it stays `true` for the whole run.
+ * One compact latest-action line. The full chronological action list stays collapsed by
+ * default, and a manual expansion stays open as live actions arrive.
  */
 export function ToolActivityDisclosure({
   live,
-  stepCount,
+  latestAction,
   durationMs,
   children,
 }: {
   live: boolean;
-  stepCount: number;
+  latestAction?: string;
   durationMs?: number;
   children: ReactNode;
 }) {
   const duration = formatToolActivityDuration(durationMs);
+  const latest = latestAction?.trim() || "Tool activity";
+  const ActionIcon = toolIcon(latest);
   return (
-    <details
-      key={live ? "working" : "actions"}
-      open={live}
-      data-testid="tool-activity"
-      data-live={live || undefined}
-      className="group"
-    >
+    <details data-testid="tool-activity" data-live={live || undefined} className="group">
       <summary
-        className={`flex min-h-6 w-fit cursor-pointer list-none items-center gap-1 rounded-md py-0.5 pe-1.5 text-[13px] font-medium outline-none hover:text-foreground/75 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background ${
+        className={`flex min-h-7 max-w-full cursor-pointer list-none items-center gap-1.5 rounded-md py-0.5 pe-1.5 text-[13px] font-medium outline-none hover:text-foreground/75 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background ${
           live ? "text-foreground/75" : "text-muted-foreground"
         }`}
       >
@@ -93,12 +133,23 @@ export function ToolActivityDisclosure({
           className="transition-transform duration-150 group-open:rotate-90 motion-reduce:transition-none"
         />
         {live ? (
-          <Plural value={stepCount} one="Working… · # tool" other="Working… · # tools" />
+          <LoaderCircle
+            aria-hidden
+            size={13}
+            className="shrink-0 animate-spin text-warning motion-reduce:animate-none"
+          />
         ) : (
-          <>
-            <Plural value={stepCount} one="Done · # tool" other="Done · # tools" />
-            {duration ? ` · ${duration}` : null}
-          </>
+          <ActionIcon aria-hidden size={13} className="shrink-0 text-muted-foreground" />
+        )}
+        <span className="min-w-0 truncate" data-testid="tool-latest-action">
+          {latest}
+        </span>
+        {live ? (
+          <span className="shrink-0 text-muted-foreground">· Working</span>
+        ) : (
+          <span className="shrink-0 text-muted-foreground">
+            · Done{duration ? ` · ${duration}` : ""}
+          </span>
         )}
       </summary>
       <div className="ms-[7px] mt-0.5 border-s border-border ps-3">{children}</div>
@@ -111,31 +162,33 @@ export function ToolActivityDisclosure({
  */
 export function StandaloneToolActivity({
   live,
+  active = live,
   steps,
-  stepCount,
+  latestAction,
   durationMs,
 }: {
   live: boolean;
+  active?: boolean;
   steps: readonly ToolStep[];
-  stepCount: number;
+  latestAction?: string;
   durationMs?: number;
 }) {
   return (
     <div className="flex justify-start" dir="ltr" data-testid="tool-activity-line">
       <div className="max-w-[74%] min-w-0 ps-1">
-        <ToolActivityDisclosure live={live} stepCount={stepCount} durationMs={durationMs}>
-          <ToolSteps
-            steps={steps}
-            currentIndex={live ? steps.length - 1 : undefined}
-            limit={live ? LIVE_TOOL_STEP_WINDOW : undefined}
-          />
+        <ToolActivityDisclosure
+          live={live}
+          latestAction={latestAction ?? steps.at(-1)?.label}
+          durationMs={durationMs}
+        >
+          <ToolSteps steps={steps} currentIndex={active ? steps.length - 1 : undefined} />
         </ToolActivityDisclosure>
       </div>
     </div>
   );
 }
 
-/** A bot message whose only visible blocks are tool cards: one slim line per card, no bubble. */
+/** A bot message whose only visible blocks are tool activity: one slim line, no bubble. */
 export function ToolOnlyNarration({
   blocks,
   live,
@@ -143,19 +196,25 @@ export function ToolOnlyNarration({
   blocks: readonly ThreadMessage["blocks"][number][];
   live: boolean;
 }) {
+  const actionBlocks = blocks.filter(
+    (block): block is Extract<ThreadMessage["blocks"][number], { kind: "steps" }> =>
+      block.kind === "steps",
+  );
+  const steps = actionBlocks.flatMap((block) => block.steps);
+  const liveAction = blocks.findLast(
+    (block) => block.kind === "progress" && block.activity === true && block.text.trim(),
+  );
+  const visibleSteps =
+    liveAction?.kind === "progress" ? [...steps, { label: liveAction.text, count: 1 }] : steps;
+  if (visibleSteps.length === 0) return null;
+  const durationMs = actionBlocks.reduce((total, block) => total + (block.durationMs ?? 0), 0);
   return (
-    <>
-      {blocks.map((block, i) =>
-        block.kind === "steps" ? (
-          <StandaloneToolActivity
-            key={i}
-            live={live}
-            steps={block.steps}
-            stepCount={toolStepCount(block.steps)}
-            durationMs={block.durationMs}
-          />
-        ) : null,
-      )}
-    </>
+    <StandaloneToolActivity
+      live={live}
+      active={liveAction?.kind === "progress"}
+      steps={visibleSteps}
+      latestAction={liveAction?.kind === "progress" ? liveAction.text : undefined}
+      durationMs={durationMs || undefined}
+    />
   );
 }

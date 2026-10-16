@@ -26,20 +26,27 @@ export function toolStepCount(steps: readonly { count: number }[]): number {
 }
 
 /**
- * Only a `steps` block becomes a card, and only when the preference is on.
- * A `progress` block marked `activity: true` never renders, in either mode.
+ * Completed steps and live tool progress render only when tool activity is enabled.
  */
-export function shouldRenderToolCard(block: MessageBlock, showToolActivity: boolean): boolean {
-  return showToolActivity && block.kind === "steps";
+export function shouldRenderToolCard(
+  block: MessageBlock,
+  showToolActivity: boolean,
+  live = false,
+): boolean {
+  return (
+    showToolActivity &&
+    (block.kind === "steps" || (live && block.kind === "progress" && block.activity === true))
+  );
 }
 
 /** Blocks that survive into a message render: everything except hidden tool activity. */
 export function renderableMessageBlocks(
   blocks: readonly MessageBlock[],
   showToolActivity: boolean,
+  live = false,
 ): MessageBlock[] {
   return blocks.filter(
-    (block) => !isToolActivityBlock(block) || shouldRenderToolCard(block, showToolActivity),
+    (block) => !isToolActivityBlock(block) || shouldRenderToolCard(block, showToolActivity, live),
   );
 }
 
@@ -51,17 +58,19 @@ export function renderableMessageBlocks(
 export function isToolOnlyNarration(
   blocks: readonly MessageBlock[],
   showToolActivity: boolean,
+  live = false,
 ): boolean {
-  const visible = renderableMessageBlocks(blocks, showToolActivity);
-  return visible.length > 0 && visible.every((block) => block.kind === "steps");
+  const visible = renderableMessageBlocks(blocks, showToolActivity, live);
+  return visible.length > 0 && visible.every(isToolActivityBlock);
 }
 
 /** True when a message still has at least one block to show under the preference. */
 export function messageHasVisibleBlocks(
   blocks: readonly MessageBlock[],
   showToolActivity: boolean,
+  live = false,
 ): boolean {
   return blocks.some(
-    (block) => !isToolActivityBlock(block) || shouldRenderToolCard(block, showToolActivity),
+    (block) => !isToolActivityBlock(block) || shouldRenderToolCard(block, showToolActivity, live),
   );
 }

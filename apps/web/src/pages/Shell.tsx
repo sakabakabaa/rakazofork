@@ -150,7 +150,6 @@ import { ComputerWorkspace } from "../components/computer/ComputerWorkspace";
 import { lazyOverlay } from "../components/ErrorBoundary";
 import { MessageHoverMetadata } from "../components/MessageHoverMetadata";
 import {
-  LIVE_TOOL_STEP_WINDOW,
   StandaloneToolActivity,
   ToolActivityDisclosure,
   ToolOnlyNarration,
@@ -230,7 +229,6 @@ import {
   messageHasVisibleBlocks,
   renderableMessageBlocks,
   shouldRenderToolCard,
-  toolStepCount,
 } from "../lib/tool-activity-view";
 import {
   transcriptCanSnapAfterFrame,
@@ -4807,7 +4805,7 @@ const Transcript = memo(function Transcript({
   const reactionView = useMemo(() => projectMessageReactions(messages), [messages]);
   const separatorIds = timeSeparatorIds(
     reactionView.visibleMessages.filter((message) =>
-      messageHasVisibleBlocks(message.blocks, showToolActivity),
+      messageHasVisibleBlocks(message.blocks, showToolActivity, message.id.startsWith("progress:")),
     ),
   );
   const workingBotName = workingBots.length === 1 ? workingBots[0]?.name : undefined;
@@ -5080,7 +5078,14 @@ const Transcript = memo(function Transcript({
             );
           }
           const message = item.message;
-          if (!messageHasVisibleBlocks(message.blocks, showToolActivity)) return null;
+          if (
+            !messageHasVisibleBlocks(
+              message.blocks,
+              showToolActivity,
+              message.id.startsWith("progress:"),
+            )
+          )
+            return null;
           const peerReceipt = isPeerReceiptBlocks(message.blocks);
           const messageReactions = reactionView.reactions.get(message.id);
           return (
@@ -6520,7 +6525,35 @@ const MessageView = memo(function MessageView({
     );
   const isLive = message.id.startsWith("progress:");
   const quoteMessageId = message.id.includes(":") ? undefined : message.id;
-  const visibleNarrationBlocks = renderableMessageBlocks(message.blocks, showToolActivity);
+  const visibleNarrationBlocks = renderableMessageBlocks(message.blocks, showToolActivity, isLive);
+  const toolStepBlocks = showToolActivity
+    ? message.blocks.filter(
+        (block): block is Extract<ThreadMessage["blocks"][number], { kind: "steps" }> =>
+          block.kind === "steps",
+      )
+    : [];
+  const toolSteps = toolStepBlocks.flatMap((block) => block.steps);
+  const liveToolAction = isLive
+    ? message.blocks.findLast(
+        (block) => block.kind === "progress" && block.activity === true && block.text.trim(),
+      )
+    : undefined;
+  const visibleToolSteps =
+    liveToolAction?.kind === "progress"
+      ? [...toolSteps, { label: liveToolAction.text, count: 1 }]
+      : toolSteps;
+  const toolDurationMs = toolStepBlocks.reduce(
+    (total, block) => total + (block.durationMs ?? 0),
+    0,
+  );
+  const lastToolBlockIndex = message.blocks.reduce(
+    (last, block, index) => (shouldRenderToolCard(block, showToolActivity, isLive) ? index : last),
+    -1,
+  );
+  const lastVisibleNarrationToolBlockIndex = visibleNarrationBlocks.reduce(
+    (last, block, index) => (shouldRenderToolCard(block, showToolActivity, isLive) ? index : last),
+    -1,
+  );
 
   const replyBotId = message.replyPreview?.botId ?? replyParent?.botId;
   const speakerBot = message.botId ? peerBot?.(message.botId) : undefined;
@@ -6561,7 +6594,7 @@ const MessageView = memo(function MessageView({
   );
   if (isNarration) {
     if (visibleNarrationBlocks.length === 0) return null;
-    if (isToolOnlyNarration(message.blocks, showToolActivity)) {
+    if (isToolOnlyNarration(message.blocks, showToolActivity, isLive)) {
       return (
         <>
           {messageContext}
@@ -6579,23 +6612,25 @@ const MessageView = memo(function MessageView({
             dir="auto"
           >
             {visibleNarrationBlocks.map((block, i) => {
-              if (block.kind === "steps") {
+              if (shouldRenderToolCard(block, showToolActivity, isLive)) {
+                if (i !== lastVisibleNarrationToolBlockIndex) return null;
+                const action =
+                  liveToolAction?.kind === "progress" ? liveToolAction.text : undefined;
                 return (
                   <ToolActivityDisclosure
                     key={i}
                     live={isLive}
-                    stepCount={toolStepCount(block.steps)}
-                    durationMs={block.durationMs}
+                    latestAction={action ?? visibleToolSteps.at(-1)?.label}
+                    durationMs={toolDurationMs || undefined}
                   >
                     <ToolSteps
-                      steps={block.steps}
-                      currentIndex={isLive ? block.steps.length - 1 : undefined}
-                      limit={isLive ? LIVE_TOOL_STEP_WINDOW : undefined}
+                      steps={visibleToolSteps}
+                      currentIndex={liveToolAction ? visibleToolSteps.length - 1 : undefined}
                     />
                   </ToolActivityDisclosure>
                 );
               }
-              if (block.kind === "text" || block.kind === "progress") {
+              if (block.kind === "text" || (block.kind === "progress" && !block.activity)) {
                 return (
                   <div
                     key={i}
@@ -6626,14 +6661,20 @@ const MessageView = memo(function MessageView({
     <>
       {messageContext}
       {message.blocks.map((block, i) => {
-        if (block.kind === "steps" && shouldRenderToolCard(block, showToolActivity)) {
+        if (shouldRenderToolCard(block, showToolActivity, isLive)) {
+          if (i !== lastToolBlockIndex) return null;
           return (
             <StandaloneToolActivity
               key={i}
               live={isLive}
-              steps={block.steps}
-              stepCount={toolStepCount(block.steps)}
-              durationMs={block.durationMs}
+              active={liveToolAction?.kind === "progress"}
+              steps={visibleToolSteps}
+              latestAction={
+                liveToolAction?.kind === "progress"
+                  ? liveToolAction.text
+                  : visibleToolSteps.at(-1)?.label
+              }
+              durationMs={toolDurationMs || undefined}
             />
           );
         }
