@@ -617,14 +617,13 @@ describe("web markdown link previews", () => {
     await view.cleanup();
   });
 
-  it("draws no card for a link inside a sentence", async () => {
+  it("draws a card when a sentence mentions exactly one link", async () => {
     const load = vi.fn().mockResolvedValue({ preview });
     const view = await renderWithPreviews(
-      "See [the docs](https://example.test/docs) for details.",
+      "See [the docs](https://example.test/inline) for details.",
       load,
     );
-    expect(view.container.querySelector("a.rk-chat-preview")).toBeNull();
-    expect(load).not.toHaveBeenCalled();
+    expect(view.container.querySelector("a.rk-chat-preview")).not.toBeNull();
     await view.cleanup();
   });
 
@@ -718,5 +717,106 @@ describe("web markdown link previews", () => {
       root.unmount();
     });
     container.remove();
+  });
+});
+
+describe("link preview trigger shapes", () => {
+  const preview = {
+    url: "https://github.com/elie222/rakazo",
+    title: "Rakazo",
+    siteName: "GitHub",
+  };
+
+  async function renderIn(node: ReactNode, endpoint: string) {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    const load = vi.fn().mockResolvedValue({ preview });
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <LinkPreviewsContext.Provider value={{ endpoint, load }}>
+          {node}
+        </LinkPreviewsContext.Provider>,
+      );
+    });
+    await act(async () => {});
+    return {
+      container,
+      load,
+      cleanup: async () => {
+        await act(async () => {
+          root.unmount();
+        });
+        container.remove();
+      },
+    };
+  }
+
+  it("draws a card when a bot paragraph is one link", async () => {
+    const view = await renderIn(
+      <ChatMarkdown>{"https://github.com/elie222/rakazo"}</ChatMarkdown>,
+      "bot-alone",
+    );
+    expect(view.container.querySelector("a.rk-chat-preview")).not.toBeNull();
+    await view.cleanup();
+  });
+
+  it("draws a card when a few words introduce the only link", async () => {
+    const view = await renderIn(
+      <ChatMarkdown>{"Source: https://github.com/elie222/rakazo"}</ChatMarkdown>,
+      "bot-intro",
+    );
+    expect(view.container.querySelector("a.rk-chat-preview")).not.toBeNull();
+    await view.cleanup();
+  });
+
+  it("leaves a paragraph with two links as prose", async () => {
+    const view = await renderIn(
+      <ChatMarkdown>{"https://github.com/a and https://github.com/b"}</ChatMarkdown>,
+      "bot-two",
+    );
+    expect(view.container.querySelector("a.rk-chat-preview")).toBeNull();
+    expect(view.load).not.toHaveBeenCalled();
+    await view.cleanup();
+  });
+
+  // fuzzyLink is off on purpose, so a bare domain is text, not a link, and has nothing to unfurl.
+  it("leaves a bare domain as text", async () => {
+    const view = await renderIn(
+      <ChatMarkdown>{"github.com/elie222/rakazo"}</ChatMarkdown>,
+      "bot-bare",
+    );
+    expect(view.container.querySelector("a.rk-chat-preview")).toBeNull();
+    expect(view.container.querySelector("a.rk-chat-link")).toBeNull();
+    await view.cleanup();
+  });
+
+  it("draws a card for a user message that is one link", async () => {
+    const view = await renderIn(
+      <LinkifiedText>{"https://github.com/elie222/rakazo"}</LinkifiedText>,
+      "user-alone",
+    );
+    expect(view.container.querySelector("a.rk-chat-preview")).not.toBeNull();
+    await view.cleanup();
+  });
+
+  it("draws a card for a user message that introduces the link", async () => {
+    const view = await renderIn(
+      <LinkifiedText>{"see https://github.com/elie222/rakazo"}</LinkifiedText>,
+      "user-intro",
+    );
+    expect(view.container.querySelector("a.rk-chat-preview")).not.toBeNull();
+    await view.cleanup();
+  });
+
+  it("leaves a user message with two links alone", async () => {
+    const view = await renderIn(
+      <LinkifiedText>{"https://github.com/a https://github.com/b"}</LinkifiedText>,
+      "user-two",
+    );
+    expect(view.container.querySelector("a.rk-chat-preview")).toBeNull();
+    expect(view.load).not.toHaveBeenCalled();
+    await view.cleanup();
   });
 });

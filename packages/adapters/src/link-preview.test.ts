@@ -60,7 +60,7 @@ const publicResolver: ResolveHostname = async () => [{ address: "203.0.113.10", 
 
 function resolver(
   resolveHostname: ResolveHostname = publicResolver,
-  limits?: Parameters<typeof createLinkPreviewResolver>[0]["limits"],
+  limits?: NonNullable<Parameters<typeof createLinkPreviewResolver>[0]>["limits"],
 ): LinkPreviewResolver {
   return createLinkPreviewResolver({ fetch: testFetch, resolveHostname, limits });
 }
@@ -255,5 +255,40 @@ describe("createLinkPreviewResolver", () => {
   it("treats an unreachable host as a miss, not a crash", async () => {
     const { preview } = await resolver().preview("https://example.com/missing");
     expect(preview).toBeNull();
+  });
+});
+
+describe("sensitive query keys", () => {
+  // Real credential seen in this deployment: a Composio CLI key in a standalone link.
+  it("refuses a prefixed credential name such as cliKey", () => {
+    expect(isUnfurlableUrl("https://example.com/?cliKey=abc")).toBe(false);
+    expect(isUnfurlableUrl("https://example.com/?clientKey=abc")).toBe(false);
+  });
+
+  it("refuses the camelCase and separated spellings of the same names", () => {
+    for (const key of [
+      "apiKey",
+      "api_key",
+      "accessToken",
+      "access_token",
+      "authToken",
+      "clientSecret",
+      "X-Amz-Signature",
+      "session",
+      "otp",
+      "password",
+    ]) {
+      expect(isUnfurlableUrl(`https://example.com/?${key}=abc`)).toBe(false);
+    }
+  });
+
+  it("refuses one-time action keys", () => {
+    for (const key of ["reset", "confirm", "confirmation", "invite", "magic", "verify"]) {
+      expect(isUnfurlableUrl(`https://example.com/?${key}=abc`)).toBe(false);
+    }
+  });
+
+  it("still fetches an ordinary query", () => {
+    expect(isUnfurlableUrl("https://example.com/?q=rakazo&lang=en&page=2")).toBe(true);
   });
 });

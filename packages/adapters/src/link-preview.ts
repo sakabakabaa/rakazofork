@@ -24,9 +24,14 @@ const MAX_IMAGE_URL_LENGTH = 2_000;
  * the request itself can consume a reset link or leak a token to the site's logs. The favicon
  * resolver sidesteps this by only ever fetching an origin, but a preview needs the real path,
  * so this guard stands in for that protection.
+ *
+ * Matched on the normalised name (lowercased, separators removed) so `api_key`, `apiKey`,
+ * `access_token`, and `cliKey` are all caught. A name merely *ending* in one of these words
+ * counts, because services prefix them freely — `cliKey` was a real credential seen in this
+ * deployment. Anything unrecognised still fetches, so this fails closed only on the known shapes.
  */
 const SENSITIVE_QUERY_KEY =
-  /^(?:access_?token|api_?key|auth|code|confirmation|invite|key|magic|otp|passwd|password|pwd|reset|secret|session|sig|signature|token|verify)$/i;
+  /^(?:confirm|confirmation|invite|magic|reset|verify)$|(?:key|token|secret|password|passwd|pwd|signature|sig|credential|code|otp|pin|auth|session)$/;
 
 export type LinkPreview = {
   url: string;
@@ -72,7 +77,8 @@ export function isUnfurlableUrl(value: string): boolean {
   if (url.protocol !== "http:" && url.protocol !== "https:") return false;
   if (url.username || url.password) return false;
   for (const key of url.searchParams.keys()) {
-    if (SENSITIVE_QUERY_KEY.test(key)) return false;
+    // Normalise so `api_key`, `apiKey`, and `cliKey` all reduce to a checkable word.
+    if (SENSITIVE_QUERY_KEY.test(key.toLowerCase().replace(/[^a-z0-9]/g, ""))) return false;
   }
   return true;
 }

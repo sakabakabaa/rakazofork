@@ -384,3 +384,12 @@ a.rk-chat-preview:hover {
   font-size: 0.875em;
   line-height: 1.4;
 }
+
+/* In a user bubble the card follows the text inline, so it needs its own separation. */
+a.rk-chat-preview {
+  margin-top: 0.4em;
+}
+
+.rk-chat-link-preview > a.rk-chat-preview {
+  margin-top: 0;
+}
