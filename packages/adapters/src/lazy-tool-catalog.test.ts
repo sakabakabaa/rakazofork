@@ -10,10 +10,12 @@ import {
   formatNameIndexText,
   lazyCatalogTools,
   loadCatalogEntry,
+  MAX_SEARCH_DESCRIPTION_LENGTH,
   NAME_INDEX_MAX_NAMES,
   resolveCatalogCall,
   SELECTED_SCHEMA_MAX_BYTES,
   searchCatalog,
+  TOOL_SEARCH_DEFAULT_LIMIT,
   TOOL_SEARCH_LIMIT,
   uniquifyInstalledToolName,
 } from "./lazy-tool-catalog.js";
@@ -280,6 +282,34 @@ describe("lazy tool catalog", () => {
     expect(JSON.stringify(first)).not.toContain("secretShape");
   });
 
+  it("keeps multi-match discovery compact and signals when narrower searches are needed", () => {
+    const entries = catalogEntries(
+      Array.from({ length: 12 }, (_, index) => ({
+        name: `gmail_action_${String(index).padStart(2, "0")}`,
+        description: "Gmail action details ".repeat(40),
+        inputSchema: { type: "object", properties: {} },
+        route: {
+          connectorId: "test",
+          resourceId: `gmail-${index}`,
+          toolName: `gmail_action_${index}`,
+          catalogGroup: "gmail",
+        },
+      })),
+    );
+    const result = searchCatalog(entries, { query: "gmail action" });
+
+    expect("tools" in result && result.tools).toHaveLength(TOOL_SEARCH_DEFAULT_LIMIT);
+    expect("tools" in result && result.tools[0]?.description.length).toBe(
+      MAX_SEARCH_DESCRIPTION_LENGTH,
+    );
+    expect(result).toMatchObject({
+      total: 12,
+      hasMore: true,
+      hint: expect.stringContaining("Gmail profile, then Gmail labels"),
+    });
+    expect(JSON.stringify(result).length).toBeLessThan(3_000);
+  });
+
   it("rejects an untrusted selected schema above the byte ceiling", () => {
     const entries = catalogEntries([
       {
@@ -305,7 +335,9 @@ describe("lazy tool catalog", () => {
     const entry = loadCatalogEntry(entries, { id: "src:verbose" });
     expect(entry.tool.description).toHaveLength(600);
     const hits = searchCatalog(entries, { query: "verbose" });
-    expect("tools" in hits && hits.tools[0]?.description).toHaveLength(500);
+    expect("tools" in hits && hits.tools[0]?.description).toHaveLength(
+      MAX_SEARCH_DESCRIPTION_LENGTH,
+    );
   });
 
   it("loads by exposed tool name as well as catalog id", () => {
