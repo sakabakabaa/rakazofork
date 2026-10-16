@@ -23,6 +23,7 @@ export interface MessagingEnvironmentValues {
   whatsappPhoneNumberId?: string | undefined;
   whatsappAppSecret?: string | undefined;
   whatsappVerifyToken?: string | undefined;
+  whatsappApiUrl?: string | undefined;
   telegramBotToken?: string | undefined;
   telegramWebhookSecret?: string | undefined;
   larkAppId?: string | undefined;
@@ -49,6 +50,7 @@ export function messagingEnvFromProcess(
     whatsappPhoneNumberId: clean(env.WHATSAPP_PHONE_NUMBER_ID),
     whatsappAppSecret: clean(env.WHATSAPP_APP_SECRET),
     whatsappVerifyToken: clean(env.WHATSAPP_VERIFY_TOKEN),
+    whatsappApiUrl: clean(env.WHATSAPP_API_URL),
     telegramBotToken: clean(env.TELEGRAM_BOT_TOKEN),
     telegramWebhookSecret: clean(env.TELEGRAM_WEBHOOK_SECRET_TOKEN),
     larkAppId: clean(env.LARK_APP_ID),
@@ -144,6 +146,7 @@ export function messagingPlatformsFromEnv(
         phoneNumberId: env.whatsappPhoneNumberId,
         appSecret: env.whatsappAppSecret,
         verifyToken: env.whatsappVerifyToken,
+        apiUrl: env.whatsappApiUrl,
       }),
     });
   }

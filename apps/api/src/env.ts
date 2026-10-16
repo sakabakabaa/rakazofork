@@ -77,6 +77,7 @@ export interface AppEnv {
   whatsappPhoneNumberId: string | undefined;
   whatsappAppSecret: string | undefined;
   whatsappVerifyToken: string | undefined;
+  whatsappApiUrl: string | undefined;
   telegramBotToken: string | undefined;
   telegramWebhookSecret: string | undefined;
   larkAppId: string | undefined;
@@ -216,6 +217,7 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): AppEnv {
     whatsappPhoneNumberId: optional(source.WHATSAPP_PHONE_NUMBER_ID),
     whatsappAppSecret: optional(source.WHATSAPP_APP_SECRET),
     whatsappVerifyToken: optional(source.WHATSAPP_VERIFY_TOKEN),
+    whatsappApiUrl: optional(source.WHATSAPP_API_URL),
     telegramBotToken: optional(source.TELEGRAM_BOT_TOKEN),
     telegramWebhookSecret: optional(source.TELEGRAM_WEBHOOK_SECRET_TOKEN),
     larkAppId: optional(source.LARK_APP_ID),

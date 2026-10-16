@@ -25,6 +25,7 @@ import { ExternalConversationSettings } from "./ExternalConversationSettings";
 export function MessagingSettingsOverlay({ onClose }: { onClose: () => void }) {
   const { t } = useLingui();
   const [status, setStatus] = useState<MessagingStatus | null>(null);
+  const [whatsappWeb, setWhatsappWeb] = useState<{ enabled: boolean; state: string; qrDataUrl: string | null; phone: string | null } | null>(null);
   const [channels, setChannels] = useState<MessagingChannelMembership[]>([]);
   const [connections, setConnections] = useState<MessagingAgentConnection[]>([]);
   const [bots, setBots] = useState<Bot[]>([]);
@@ -35,14 +36,16 @@ export function MessagingSettingsOverlay({ onClose }: { onClose: () => void }) {
   const [error, setError] = useState<string | null>(null);
 
   async function refresh() {
-    const [nextStatus, nextChannels, nextConnections, nextBots, navigation] = await Promise.all([
+    const [nextStatus, nextChannels, nextConnections, nextBots, navigation, nextWhatsappWeb] = await Promise.all([
       rpc.messaging.status(),
       rpc.messaging.channels.list(),
       rpc.messaging.connections.list(),
       rpc.bots.list(),
       rpc.spaces.list(),
+      rpc.messaging.whatsappWeb.status(),
     ]);
     setStatus(nextStatus);
+    setWhatsappWeb(nextWhatsappWeb);
     setChannels(nextChannels);
     setConnections(nextConnections);
     setBots(nextBots);
@@ -66,6 +69,26 @@ export function MessagingSettingsOverlay({ onClose }: { onClose: () => void }) {
       setError(t`Couldn't update messaging settings`);
     }
   }
+
+  useEffect(() => {
+    let timer: number | undefined;
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const next = await rpc.messaging.whatsappWeb.status();
+        if (!cancelled) setWhatsappWeb(next);
+      } catch {
+        // The main settings loader surfaces persistent failures; transient
+        // polling errors should not hide the rest of Messaging settings.
+      }
+      if (!cancelled) timer = window.setTimeout(() => void poll(), 2500);
+    };
+    timer = window.setTimeout(() => void poll(), 1000);
+    return () => {
+      cancelled = true;
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, []);
 
   const agentByIdentity = new Map(status?.identities.map((i) => [i.id, i.botName]) ?? []);
   function channelMeta(channel: MessagingChannelMembership): string {
@@ -115,6 +138,52 @@ export function MessagingSettingsOverlay({ onClose }: { onClose: () => void }) {
             <p className="mt-3 text-[13px] text-muted-foreground/70">
               {status.providers.map(providerLabel).join(" · ")}
             </p>
+          ) : null}
+          {whatsappWeb?.enabled ? (
+            <div className="mt-4 rounded-lg border border-border/80 p-4" data-testid="whatsapp-web-pairing">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <p className="text-[14px] font-medium text-foreground">WhatsApp Web · QR link</p>
+                  <p className="mt-1 text-[12px] text-muted-foreground/75">
+                    {whatsappWeb.state === "connected"
+                      ? "Connected" + (whatsappWeb.phone ? " as +" + whatsappWeb.phone : "")
+                      : whatsappWeb.state === "qr"
+                        ? "Scan the QR in WhatsApp → Linked devices"
+                        : whatsappWeb.state === "logged_out"
+                          ? "Disconnected"
+                          : whatsappWeb.state === "error"
+                            ? "Connection failed"
+                            : "Waiting for WhatsApp Web"}
+                  </p>
+                </div>
+                {whatsappWeb.state === "connected" ? (
+                  <Button
+                    variant="secondary"
+                    className="rounded-full"
+                    onClick={() => void act(() => rpc.messaging.whatsappWeb.disconnect())}
+                  >
+                    Disconnect
+                  </Button>
+                ) : (
+                  <Button
+                    className="rounded-full"
+                    onClick={() => void act(() => rpc.messaging.whatsappWeb.connect())}
+                  >
+                    Show QR
+                  </Button>
+                )}
+              </div>
+              {whatsappWeb.state === "qr" && whatsappWeb.qrDataUrl ? (
+                <img
+                  src={whatsappWeb.qrDataUrl}
+                  alt="WhatsApp Web pairing QR code"
+                  className="mt-4 h-56 w-56 rounded-lg bg-white p-2"
+                />
+              ) : null}
+              <p className="mt-3 text-[12px] leading-relaxed text-muted-foreground/75">
+                Uses a linked-device session for personal WhatsApp. Group chats and media are not enabled; keep this pairing QR private.
+              </p>
+            </div>
           ) : null}
           {status?.identities.length ? (
             <ul className="mt-3 space-y-3">
