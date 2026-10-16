@@ -781,6 +781,11 @@ export const appContract = {
   /** External messaging surface: link state, group channels, agent connections. */
   messaging: {
     status: oc.output(MessagingStatusSchema),
+    whatsappWeb: {
+      status: oc.output(z.object({ enabled: z.boolean(), state: z.string(), qrDataUrl: z.string().nullable(), phone: z.string().nullable() })),
+      connect: oc.output(z.object({ ok: z.literal(true) })),
+      disconnect: oc.output(z.object({ ok: z.literal(true) })),
+    },
     link: {
       /** Issue a short-lived code the user sends to the line from a chat app. */
       start: oc

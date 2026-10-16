@@ -557,6 +557,9 @@ export async function createApp(
       providers: messaging?.platforms().map((platform) => platform.provider) ?? [],
       openSignup: env.messagingOpenSignup,
     },
+    whatsappWeb: env.whatsappApiUrl && env.whatsappAccessToken
+      ? { url: env.whatsappApiUrl, token: env.whatsappAccessToken }
+      : undefined,
     env: {
       ticketBoardEnabled,
       agentRuntime: env.agentRuntime,

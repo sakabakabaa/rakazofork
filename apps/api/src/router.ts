@@ -579,6 +579,8 @@ export interface RouterDeps {
   dataDir: string;
   /** Present when the external messaging surface is enabled. */
   messaging?: { enabled: boolean; providers: string[]; openSignup: boolean };
+  /** Private WhatsApp Web gateway control endpoint; never returned to clients. */
+  whatsappWeb?: { url: string; token: string };
   /** Present only when the deployment bills; self-hosted installs leave it unset. */
   billing?: BillingService;
   env: {
@@ -5387,6 +5389,38 @@ export function createRouter(deps: RouterDeps) {
           ),
         };
       }),
+      whatsappWeb: {
+        status: authed.messaging.whatsappWeb.status.handler(async () => {
+          if (!deps.whatsappWeb) return { enabled: false, state: "disabled", qrDataUrl: null, phone: null };
+          const response = await fetch(new URL("/_rakazo/status", deps.whatsappWeb.url), {
+            headers: { authorization: "Bearer " + deps.whatsappWeb.token },
+            signal: AbortSignal.timeout(5_000),
+          });
+          if (!response.ok) throw new ORPCError("INTERNAL_SERVER_ERROR", { message: "WhatsApp Web gateway unavailable" });
+          const payload = await response.json() as { status?: string; qrDataUrl?: string | null; phone?: string | null };
+          return { enabled: true, state: payload.status ?? "unknown", qrDataUrl: payload.qrDataUrl ?? null, phone: payload.phone ?? null };
+        }),
+        connect: authed.messaging.whatsappWeb.connect.handler(async () => {
+          if (!deps.whatsappWeb) throw new ORPCError("NOT_FOUND");
+          const response = await fetch(new URL("/_rakazo/connect", deps.whatsappWeb.url), {
+            method: "POST",
+            headers: { authorization: "Bearer " + deps.whatsappWeb.token },
+            signal: AbortSignal.timeout(5_000),
+          });
+          if (!response.ok) throw new ORPCError("INTERNAL_SERVER_ERROR", { message: "WhatsApp Web gateway unavailable" });
+          return { ok: true as const };
+        }),
+        disconnect: authed.messaging.whatsappWeb.disconnect.handler(async () => {
+          if (!deps.whatsappWeb) throw new ORPCError("NOT_FOUND");
+          const response = await fetch(new URL("/_rakazo/logout", deps.whatsappWeb.url), {
+            method: "POST",
+            headers: { authorization: "Bearer " + deps.whatsappWeb.token },
+            signal: AbortSignal.timeout(10_000),
+          });
+          if (!response.ok) throw new ORPCError("INTERNAL_SERVER_ERROR", { message: "WhatsApp Web gateway unavailable" });
+          return { ok: true as const };
+        }),
+      },
       link: {
         start: authed.messaging.link.start.handler(async ({ context, input }) => {
           const bot = await deps.prisma.bot.findFirst({
