@@ -196,7 +196,14 @@ export function searchCatalog(
   const limit = Number.isFinite(requested)
     ? Math.max(1, Math.min(TOOL_SEARCH_LIMIT, Math.trunc(requested)))
     : TOOL_SEARCH_LIMIT;
-  const matched = scoped
+  const exactMatches = scoped.filter(({ tool, group }) => {
+    const name = tool.name.toLowerCase();
+    const shortName = catalogShortName({ id: catalogEntryId(tool), tool, group }).toLowerCase();
+    return name === query || shortName === query;
+  });
+  const matchedEntries = exactMatches.length > 0
+    ? exactMatches.map((entry) => ({ entry, score: 0 }))
+    : scoped
     .map((entry) => ({ entry, score: catalogScore(entry, query) }))
     .filter(({ score }) => score < 5)
     .sort(
@@ -204,7 +211,8 @@ export function searchCatalog(
         left.score - right.score ||
         left.entry.tool.name.localeCompare(right.entry.tool.name) ||
         left.entry.id.localeCompare(right.entry.id),
-    )
+    );
+  const matched = matchedEntries
     .slice(0, limit)
     .map(({ entry }) => ({
       id: entry.id,
@@ -419,5 +427,5 @@ function searchTokens(value: string): string[] {
   return value
     .toLowerCase()
     .split(/[^a-z0-9]+/)
-    .filter((token) => token.length > 1);
+    .filter((token) => token.length > 1 || /^\d+$/.test(token));
 }
