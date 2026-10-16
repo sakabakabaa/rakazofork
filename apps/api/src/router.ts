@@ -29,6 +29,7 @@ import type {
   FaviconResolver,
   getBotSecretMetadata,
   IntegrationProviderSettings,
+  LinkPreviewResolver,
   MemoryProviderResolver,
   PiOAuthLogins,
   RemoteConnectorDependencies,
@@ -55,6 +56,7 @@ import {
   computerSupportsUpdate,
   computerUpdateView,
   createFaviconResolver,
+  createLinkPreviewResolver,
   createTicket,
   createVoiceProvider,
   defaultCatalogModelId,
@@ -559,6 +561,8 @@ export interface RouterDeps {
   codexCatalog?: CodexLiveCatalog;
   /** Site icons for links; defaults to the per-process cache that fetches them. */
   favicons?: FaviconResolver;
+  /** Preview cards for links; defaults to the per-process cache that fetches them. */
+  linkPreviews?: LinkPreviewResolver;
   /**
    * Detached refresh for a stored credential whose bearer expired — the live
    * catalog path calls it instead of refreshing inline. Defaults to the
@@ -765,6 +769,7 @@ export function createRouter(deps: RouterDeps) {
   const mcpOAuth = deps.mcpOAuth ?? new McpOAuthBroker(deps.prisma, deps.secrets);
   const codexCatalog = deps.codexCatalog ?? new CodexCatalogCache();
   const favicons = deps.favicons ?? createFaviconResolver();
+  const linkPreviews = deps.linkPreviews ?? createLinkPreviewResolver();
   const refreshExpiredCredential =
     deps.refreshExpiredModelCredential ??
     ((scope: { userId: string; spaceId: string }, secretId: string, provider: string) =>
@@ -6032,6 +6037,7 @@ export function createRouter(deps: RouterDeps) {
     },
     links: {
       favicon: authed.links.favicon.handler(async ({ input }) => favicons.favicon(input.origin)),
+      preview: authed.links.preview.handler(async ({ input }) => linkPreviews.preview(input.url)),
     },
     runs: {
       list: authed.runs.list.handler(async ({ context, input }) => ({
