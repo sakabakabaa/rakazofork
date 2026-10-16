@@ -369,7 +369,7 @@ function LinkPreviewCard({ href }: { href: string }) {
     <ConfirmableAnchor href={preview.url} className="rk-chat-preview">
       {/* The remote image loads only for a reader who already opted into remote images. */}
       {preview.imageUrl && loadRemoteImages ? (
-        <img className="rk-chat-preview-image" src={preview.imageUrl} alt="" loading="lazy" />
+        <RemotePreviewImage src={preview.imageUrl} />
       ) : null}
       <span className="rk-chat-preview-body">
         <span className="rk-chat-preview-site">
@@ -381,6 +381,27 @@ function LinkPreviewCard({ href }: { href: string }) {
         ) : null}
       </span>
     </ConfirmableAnchor>
+  );
+}
+
+function RemotePreviewImage({ src }: { src: string }) {
+  const [failed, setFailed] = useState(false);
+  if (failed) return null;
+  return (
+    <img
+      className="rk-chat-preview-image"
+      src={src}
+      alt=""
+      loading="lazy"
+      decoding="async"
+      referrerPolicy="no-referrer"
+      onLoad={(event) => {
+        // Ignore tracking pixels and other unusably small images returned as og:image.
+        const image = event.currentTarget;
+        if (image.naturalWidth <= 1 || image.naturalHeight <= 1) setFailed(true);
+      }}
+      onError={() => setFailed(true)}
+    />
   );
 }
 

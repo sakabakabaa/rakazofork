@@ -592,6 +592,65 @@ describe("web external link confirmation", () => {
     await view.cleanup();
   });
 
+  it("loads Open Graph thumbnails without a referrer and hides a failed image", async () => {
+    const linkPreviews: LinkPreviews = {
+      load: async (url) => ({
+        preview: {
+          url,
+          title: "A useful item",
+          siteName: "Example",
+          imageUrl: "https://cdn.example.test/item.jpg",
+        },
+      }),
+    };
+    const view = await render(
+      <RemoteImagesContext.Provider value={true}>
+        <LinkPreviewsContext.Provider value={linkPreviews}>
+          <ChatMarkdown>{"https://example.test/item"}</ChatMarkdown>
+        </LinkPreviewsContext.Provider>
+      </RemoteImagesContext.Provider>,
+    );
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    let image = view.container.querySelector<HTMLImageElement>(".rk-chat-preview-image");
+    expect(image?.getAttribute("src")).toBe("https://cdn.example.test/item.jpg");
+    expect(image?.getAttribute("loading")).toBe("lazy");
+    expect(image?.getAttribute("referrerpolicy")).toBe("no-referrer");
+    await act(async () => {
+      image?.dispatchEvent(new Event("error"));
+    });
+    image = view.container.querySelector(".rk-chat-preview-image");
+    expect(image).toBeNull();
+    expect(view.container.querySelector(".rk-chat-preview-title")?.textContent).toBe(
+      "A useful item",
+    );
+    await view.cleanup();
+  });
+
+  it("does not load Open Graph thumbnails when remote images are disabled", async () => {
+    const linkPreviews: LinkPreviews = {
+      load: async (url) => ({
+        preview: { url, title: "Private by default", imageUrl: "https://cdn.example.test/item.jpg" },
+      }),
+    };
+    const view = await render(
+      <RemoteImagesContext.Provider value={false}>
+        <LinkPreviewsContext.Provider value={linkPreviews}>
+          <ChatMarkdown>{"https://example.test/item"}</ChatMarkdown>
+        </LinkPreviewsContext.Provider>
+      </RemoteImagesContext.Provider>,
+    );
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(view.container.querySelector(".rk-chat-preview-title")?.textContent).toBe(
+      "Private by default",
+    );
+    expect(view.container.querySelector(".rk-chat-preview-image")).toBeNull();
+    await view.cleanup();
+  });
+
   it("asks before a link in plain user text", async () => {
     const open = vi.spyOn(window, "open").mockReturnValue(null);
     const view = await render(<LinkifiedText>{"https://example.test/docs"}</LinkifiedText>);
