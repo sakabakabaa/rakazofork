@@ -1,5 +1,7 @@
 export type Panel =
   | "computer"
+  | "terminal"
+  | "files"
   | "settings"
   | "routine"
   | "create"
@@ -9,7 +11,15 @@ export type Panel =
 export type RightPanelState = { panel: Panel; routineId?: string };
 
 /** Panels that are safe to remember across reloads. Create flows stay ephemeral. */
-const durablePanels: readonly Panel[] = ["computer", "settings", "routine", "group-settings", null];
+const durablePanels: readonly Panel[] = [
+  "computer",
+  "terminal",
+  "files",
+  "settings",
+  "routine",
+  "group-settings",
+  null,
+];
 
 export function rightPanelStorageKey(
   userId: string,

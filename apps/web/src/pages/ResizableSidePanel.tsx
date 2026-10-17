@@ -73,13 +73,28 @@ export function ResizableSidePanel({
     setPreferredWidth(Math.max(MIN_WIDTH, Math.min(maximumWidth(reservedLeadingPx), next)));
   }
 
+  // A narrow window gets a bottom sheet, where a side column would leave too little chat
+  // width; a wide one keeps the resizable side panel. Both slide, so the transition has
+  // to cover transform on narrow and width on wide.
   return (
     <aside
       data-testid="side-panel"
       data-panel={panel}
       style={{ "--panel-width": `${width}px` } as CSSProperties}
-      className={`absolute inset-y-0 end-0 z-20 flex min-h-0 shrink-0 flex-col overflow-hidden bg-background md:relative ${dragging ? "" : "transition-[width] duration-150 ease-out"} ${open ? "w-full max-w-[384px] border-s border-sidebar-border md:w-(--panel-width) md:max-w-none" : "pointer-events-none w-0"}`}
+      className={`absolute inset-x-0 bottom-0 z-20 flex max-h-[85dvh] min-h-0 shrink-0 flex-col overflow-hidden rounded-t-2xl border-t border-sidebar-border bg-background md:inset-auto md:relative md:h-full md:max-h-none md:rounded-none md:border-t-0 md:border-s ${
+        dragging ? "" : "transition-transform duration-150 ease-out md:transition-[width]"
+      } ${
+        open
+          ? "translate-y-0 w-full md:w-(--panel-width) md:max-w-none"
+          : "pointer-events-none translate-y-full md:w-0 md:translate-y-0 md:overflow-hidden"
+      }`}
     >
+      {open ? (
+        <div
+          aria-hidden="true"
+          className="mx-auto mt-2 h-1 w-9 shrink-0 rounded-full bg-border md:hidden"
+        />
+      ) : null}
       {open ? (
         <hr
           tabIndex={0}

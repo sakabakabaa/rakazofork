@@ -41,6 +41,17 @@ describe("right panel preferences", () => {
     expect(readRightPanelState("state")).toEqual({ panel: null });
     expect(() => writeRightPanelState("state", "computer")).not.toThrow();
   });
+  it("remembers the workspace panels the rail can reopen", () => {
+    const entries = new Map<string, string>();
+    vi.stubGlobal("localStorage", {
+      getItem: (key: string) => entries.get(key) ?? null,
+      setItem: (key: string, value: string) => entries.set(key, value),
+    });
+    for (const panel of ["computer", "terminal", "files"] as const) {
+      writeRightPanelState("state", panel);
+      expect(readRightPanelState("state")).toEqual({ panel });
+    }
+  });
   it("skips ephemeral create panels and builds scoped keys", () => {
     const entries = new Map<string, string>();
     vi.stubGlobal("localStorage", {
