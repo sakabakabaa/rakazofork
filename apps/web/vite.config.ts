@@ -427,6 +427,30 @@ export default defineConfig(({ mode }) => {
       lingui(),
       tailwindcss(),
       {
+        // A tunnel can serve the app over plain HTTP as well as HTTPS. Sign-in
+        // succeeds there, but the browser silently drops the Secure session cookie,
+        // so every later request looks signed out and the app bounces to /sign-in.
+        // Redirect to HTTPS instead, which is what the deployment does anyway.
+        // Only fires when a proxy reports the original request was insecure, so
+        // reaching the dev server directly over HTTP on localhost is unaffected.
+        name: "rakazo-insecure-proxy-redirect",
+        configureServer(server) {
+          server.middlewares.use((req, res, next) => {
+            if (req.headers["x-forwarded-proto"] !== "http") {
+              next();
+              return;
+            }
+            const host = req.headers.host;
+            if (!host) {
+              next();
+              return;
+            }
+            res.writeHead(301, { Location: `https://${host}${req.url ?? "/"}` });
+            res.end();
+          });
+        },
+      },
+      {
         name: "rakazo-desktop-stack-probe",
         configureServer: (server) => attachDesktopStackProbe(server, desktopStackToken, imageTag),
         configurePreviewServer: (server) =>
