@@ -1040,6 +1040,8 @@ export const ModelCredentialSchema = z.object({
   maxTokens: z.number().int().min(1).max(MAX_MODEL_MAX_TOKENS).optional(),
   supportsImages: z.boolean().optional(),
   maxImagesPerPrompt: z.number().int().min(1).max(1000).optional(),
+  /** This connection's model generates images, so image_generate is offered. */
+  generatesImages: z.boolean().optional(),
   thinkingLevels: z.array(ThinkingLevelSchema).optional(),
   /** Stored secret kind. Absent when the secret could not be read. */
   authKind: z.enum(["api_key", "oauth", "openai_compatible"]).optional(),
@@ -1087,6 +1089,8 @@ export const ModelConnectInputSchema = z
     maxTokens: z.number().int().min(1).max(MAX_MODEL_MAX_TOKENS).nullable().optional(),
     supportsImages: z.boolean().optional(),
     maxImagesPerPrompt: z.number().int().min(1).max(1000).nullable().optional(),
+    /** This connection's model also generates images, not only reads them. */
+    generatesImages: z.boolean().optional(),
   })
   .superRefine((value, ctx) => {
     if (!modelOutputLeavesInputRoom(value.maxTokens, value.contextWindow)) {

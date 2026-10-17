@@ -29,7 +29,11 @@ export function modelIdSupportsImages(
   );
 }
 
-/** Update the explicit per-model image capability without disturbing other model ids. */
+/**
+ * Update the explicit per-model image capability without disturbing other model ids.
+ * Shared by image input (visionModelIds) and image output (imageModelIds): both are a
+ * set of model ids a connection opts into, differing only in what the flag means.
+ */
 export function updateModelImageCapabilities(
   modelIds: readonly string[] | undefined,
   modelId: string | null | undefined,

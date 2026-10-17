@@ -51,6 +51,25 @@ describe("bot tool permissions", () => {
     }
   });
 
+  it("offers image_generate only when a connected model can generate images", () => {
+    const base = {
+      graphicalToolsAllowed: false,
+      groupId: null,
+      trigger: "user",
+      semanticMemoryEnabled: false,
+      messagingChannelRun: false,
+    };
+    const names = (patch: Record<string, unknown>) =>
+      selectBuiltinToolsForRun({ ...base, ...patch }).map((tool) => tool.name);
+
+    // The tool would only fail at call time without a connection, so it is not offered.
+    expect(names({})).not.toContain("image_generate");
+    expect(names({ imageGenerationAvailable: true })).toContain("image_generate");
+    expect(
+      names({ imageGenerationAvailable: true, disabledBuiltinTools: ["image_generate"] }),
+    ).not.toContain("image_generate");
+  });
+
   it("never lets self-edit change disabled tools alongside an allowed field", () => {
     expect(parseUpdateBotPatch({ name: "Scout", disabledBuiltinTools: [] }, "Bot")).toEqual({
       patch: { name: "Scout" },
@@ -1177,6 +1196,34 @@ describe("userTurnInstructions", () => {
       expect(text).not.toContain("search_history");
       expect(text).not.toContain("read_history");
     }
+  });
+
+  it("mentions image_generate only when a connected model can generate images", () => {
+    const bare = {
+      ...base,
+      groupContext: undefined,
+      messagingContext: undefined,
+      redactedMemoryContext: undefined,
+      redactedScratchpadContext: undefined,
+      hasHistoricalContext: false,
+      agentEnvironmentInstruction: undefined,
+      botDirectory: undefined,
+      pluginLine: undefined,
+      agentSkillsLine: undefined,
+      taughtSkillsLine: undefined,
+    };
+    // No connection means no tool, so advertising it would invite a call that cannot run.
+    expect(userTurnInstructions(bare).join("\n")).not.toContain("image_generate");
+    expect(userTurnInstructions({ ...bare, imageGenerationAvailable: true }).join("\n")).toContain(
+      "image_generate",
+    );
+    expect(
+      userTurnInstructions({
+        ...bare,
+        imageGenerationAvailable: true,
+        disabledBuiltinTools: new Set(["image_generate"]),
+      }).join("\n"),
+    ).not.toContain("image_generate");
   });
 
   it("stops telling the model to use a disabled web tool", () => {

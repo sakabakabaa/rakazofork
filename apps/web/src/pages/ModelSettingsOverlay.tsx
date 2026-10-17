@@ -105,6 +105,7 @@ export function ModelSettingsOverlay({
   const [maxTokens, setMaxTokens] = useState(String(DEFAULT_MODEL_MAX_TOKENS));
   const [contextWindow, setContextWindow] = useState(String(DEFAULT_MODEL_CONTEXT_WINDOW));
   const [supportsImages, setSupportsImages] = useState(false);
+  const [generatesImages, setGeneratesImages] = useState(false);
   const [maxImagesPerPrompt, setMaxImagesPerPrompt] = useState("");
   const [{ models: probeModels, probing }, setProbe] = useState(initialModelProbeState);
   const [modelProbe] = useState(() => createModelProbe(setProbe));
@@ -191,6 +192,7 @@ export function ModelSettingsOverlay({
         );
         setContextWindow(String(nextCredential?.contextWindow ?? DEFAULT_MODEL_CONTEXT_WINDOW));
         setSupportsImages(nextCredential?.supportsImages ?? false);
+        setGeneratesImages(nextCredential?.generatesImages ?? false);
         setMaxImagesPerPrompt(String(nextCredential?.maxImagesPerPrompt ?? ""));
       } else {
         // A credential's stored effort is bound to its saved model choice.
@@ -400,6 +402,7 @@ export function ModelSettingsOverlay({
     setMaxTokens(connectionMaxTokensField(nextProvider, nextCredential?.maxTokens));
     setContextWindow(String(nextCredential?.contextWindow ?? DEFAULT_MODEL_CONTEXT_WINDOW));
     setSupportsImages(nextCredential?.supportsImages ?? false);
+    setGeneratesImages(nextCredential?.generatesImages ?? false);
     setMaxImagesPerPrompt(String(nextCredential?.maxImagesPerPrompt ?? ""));
     setModelId(nextModelId);
     setBaseUrl(
@@ -607,6 +610,7 @@ export function ModelSettingsOverlay({
               contextWindow: parsedContextWindow,
               supportsImages,
               maxImagesPerPrompt: maxImagesPerPromptInput,
+              generatesImages,
               apiKey: apiKey.trim() || undefined,
               label: selected.providerName ?? selected.provider,
             }
@@ -1383,6 +1387,13 @@ export function ModelSettingsOverlay({
                       setNotice(null);
                     }}
                     maxImagesLabel={t`Maximum images per request`}
+                    generatesImages={generatesImages}
+                    onGeneratesImagesChange={(value) => {
+                      selectionRevisionRef.current += 1;
+                      setGeneratesImages(value);
+                      setNotice(null);
+                    }}
+                    generatesImagesLabel={t`Generates images`}
                   />
                 </div>
               ) : null}

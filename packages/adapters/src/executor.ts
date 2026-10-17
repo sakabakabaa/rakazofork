@@ -37,6 +37,7 @@ import {
 } from "@rakazo/adapter-kit";
 import type { ComputerCommand, MessageBlock, RunStatus } from "@rakazo/contracts";
 import {
+  ARTIFACT_NAME_MAX_LENGTH,
   ATTACHMENT_MAX_BYTES,
   BOT_DESCRIPTION_MAX_LENGTH,
   BOT_NAME_MAX_LENGTH,
@@ -250,6 +251,7 @@ import {
   selectCompactedHistory,
   shouldEnqueueCompaction,
 } from "./history-compaction.js";
+import { generateImage, imageExtensionForMimeType } from "./image-generation.js";
 import {
   assertConnectorToolArgs,
   CATALOG_EXECUTE,
@@ -3853,6 +3855,11 @@ export function createRunExecutor(deps: ExecutorDeps) {
         const pageBrowserAllowed =
           graphical && browser.describe().capabilities.page && !heldForTakeover;
         const disabledBuiltinTools = disabledBuiltinToolSet(bot.disabledBuiltinTools);
+        // Cheap: a connection row plus its secret only when the user has one at all.
+        // A failed lookup must not fail the run — it only withholds one optional tool.
+        const imageGenerationAvailable =
+          !disabledBuiltinTools.has("image_generate") &&
+          Boolean(await resolveImageGenerationConnection(deps, run.userId).catch(() => undefined));
         const builtins = [
           ...selectBuiltinToolsForRun({
             ticketBoardEnabled: deps.ticketBoardEnabled,
@@ -3865,6 +3872,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
             cloudAgentEnabled: cloudAgentsEnabled(cloudAgent, run.spaceId),
             messagingChannelRun,
             voiceCall,
+            imageGenerationAvailable,
             disabledBuiltinTools: bot.disabledBuiltinTools,
           }),
           // Cross-owner agent connections only exist for chat-linked bots.
@@ -4930,6 +4938,76 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 error: message,
                 hint: 'Call render_plot with {"charts": true} for runnable example specs, or {"help": true} for the full guide.',
               });
+            }
+          }
+          if (name === "image_generate") {
+            const prompt = typeof args.prompt === "string" ? args.prompt.trim() : "";
+            if (!prompt) {
+              return finish({
+                error: "Describe the image to generate",
+                hint: "prompt is required.",
+              });
+            }
+            if (!deps.artifacts) return finish({ error: "artifact storage unavailable" });
+            const connection = await resolveImageGenerationConnection(deps, run.userId);
+            if (!connection) {
+              return finish({
+                error: NO_IMAGE_CONNECTION_MESSAGE,
+                hint: "The user must connect a model that generates images in Model settings.",
+              });
+            }
+            const requestedModel = typeof args.model === "string" ? args.model.trim() : "";
+            if (requestedModel && !connection.modelIds.includes(requestedModel)) {
+              return finish({
+                error: `"${requestedModel}" is not a declared image model on this connection.`,
+                models: connection.modelIds,
+              });
+            }
+            const model = requestedModel || connection.modelIds[0]!;
+            try {
+              const generated = await generateImage({
+                baseUrl: connection.baseUrl,
+                apiKey: connection.apiKey,
+                model,
+                prompt,
+                signal: context.signal,
+              });
+              // The artifact name drives the extension and the download, so it has to
+              // carry the type the bytes actually are rather than the type declared.
+              const outPath = `images/${model.replace(/[^\w.-]+/g, "-")}-${Date.now()}.${imageExtensionForMimeType(generated.mimeType)}`;
+              workspaceCheckpoint.markDirty();
+              await deps.sandbox.writeFile(
+                computer,
+                {
+                  path: resolveBotWorkspacePath(computerMode, bot.id, outPath),
+                  content: generated.bytes,
+                },
+                context,
+              );
+              const name =
+                typeof args.name === "string" && args.name.trim()
+                  ? args.name.trim()
+                  : (generated.text?.slice(0, ARTIFACT_NAME_MAX_LENGTH) ?? "Generated image");
+              const attached = await attachWorkspaceFileToThread(
+                { prisma: deps.prisma, artifacts: deps.artifacts },
+                {
+                  spaceId: run.spaceId,
+                  userId: run.userId,
+                  botId: bot.id,
+                  groupId: thread.groupId ?? undefined,
+                  runId: run.id,
+                  filePath: outPath,
+                  bytes: generated.bytes,
+                  operationId: executionId,
+                  name,
+                },
+              );
+              await publishMessage(deps, run, "bot", [attached.block]);
+              return finish({ ok: true, artifactId: attached.artifactId, path: outPath });
+            } catch (error) {
+              const message = error instanceof Error ? error.message : String(error);
+              getLogger().error(`image_generate failed for bot ${bot.id}: ${message}`);
+              return finish({ error: message });
             }
           }
           if (name === "attach_file") {
@@ -6645,6 +6723,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 taughtSkillsLine,
                 replyGuidance: runReplyGuidance(run.trigger),
                 disabledBuiltinTools,
+                imageGenerationAvailable,
               })
                 .filter((instruction): instruction is string => Boolean(instruction))
                 .join("\n\n"),
@@ -7593,6 +7672,8 @@ export function selectBuiltinToolsForRun(options: {
   messagingChannelRun: boolean;
   /** Hanging up is only offered to a turn the caller spoke on a live call. */
   voiceCall?: boolean;
+  /** A connected model declares image generation, so image_generate can run. */
+  imageGenerationAvailable?: boolean;
   /** Built-in names this bot turned off. Unknown names are ignored. */
   disabledBuiltinTools?: readonly string[];
 }) {
@@ -7622,6 +7703,7 @@ export function selectBuiltinToolsForRun(options: {
       (!isBackgroundRunTrigger(options.trigger) ||
         !["message_user", "message_bot", "handoff_to_bot", "message_agent"].includes(tool.name)) &&
       (options.voiceCall || tool.name !== "end_call") &&
+      (options.imageGenerationAvailable || tool.name !== "image_generate") &&
       (options.historyRetrievalEnabled ||
         !["search_history", "read_history"].includes(tool.name)) &&
       (!options.messagingChannelRun ||
@@ -7908,6 +7990,8 @@ export function userTurnInstructions(parts: {
   taughtSkillsLine: string | undefined;
   replyGuidance: string;
   disabledBuiltinTools?: ReadonlySet<string>;
+  /** Only mention image_generate when a connected model can actually run it. */
+  imageGenerationAvailable?: boolean;
 }): (string | undefined)[] {
   return [
     parts.botInstructions,
@@ -7956,6 +8040,13 @@ export function userTurnInstructions(parts: {
       "render_plot",
       'When a reply contains clear numeric data and a chart would make a comparison, trend, or composition easier to understand, call render_plot and include the chart with the explanation. Choose a bar chart for category comparisons, a line chart for changes over time, and a donut only for parts of one non-overlapping whole. Do not chart uncertain or overlapping totals; preserve important caveats and use text or a table when a chart could mislead. The chart is attached inline automatically, so do not write a textual placeholder such as "[Chart: ...]". render_plot supports bar, line, scatter, histogram, heatmap, faceted and more; call it with {"help": true} before your first chart to read the full guide.',
     ),
+    parts.imageGenerationAvailable
+      ? offeredBuiltinClause(
+          parts.disabledBuiltinTools,
+          "image_generate",
+          'When the user asks for a picture, illustration, icon, logo concept, or any other image, call image_generate with a complete visual description and include the result in your reply. Describe subject, composition, style, colors, and any text to render verbatim, because the image model sees only your prompt, not this conversation. The image is attached inline automatically, so do not write a placeholder such as "[Image: ...]".',
+        )
+      : undefined,
     offeredBuiltinClause(
       parts.disabledBuiltinTools,
       "add_mcp_server",
@@ -8549,6 +8640,45 @@ function deploymentKeyFor(deps: ExecutorDeps, provider: string): string | undefi
  * Still bounded well under the fetch's own abort timeout.
  */
 const CODEX_LIVE_RUN_WAIT_MS = 8_000;
+
+export const NO_IMAGE_CONNECTION_MESSAGE =
+  "No connected model generates images. Connect an image model in Model settings.";
+
+/**
+ * The endpoint image_generate should call, taken from the user's own connection.
+ *
+ * Image models are declared on the connection that already holds the base URL and
+ * key, so generation reuses that credential instead of a second, parallel config.
+ * Newest credential first, matching how every other model lookup resolves.
+ */
+export async function resolveImageGenerationConnection(
+  deps: Pick<ExecutorDeps, "prisma" | "secretStore">,
+  userId: string,
+): Promise<{ baseUrl: string; apiKey?: string; modelIds: string[] } | undefined> {
+  const credentials = await deps.prisma.userModelCredential.findMany({
+    where: { userId, provider: OPENAI_COMPATIBLE_PROVIDER_ID },
+    select: { secretId: true },
+    orderBy: { updatedAt: "desc" },
+  });
+  for (const credential of credentials) {
+    const row = await deps.prisma.secret.findFirst({
+      where: { id: credential.secretId, userId, spaceId: null },
+    });
+    if (!row) continue;
+    let parsed: ReturnType<typeof parseModelSecret>;
+    try {
+      parsed = parseModelSecret(await deps.secretStore.load(row.ciphertext, row.id));
+    } catch {
+      // An unreadable secret is the same as an unconfigured one here: try the next.
+      continue;
+    }
+    if (parsed.kind !== "openai_compatible") continue;
+    const modelIds = parsed.imageModelIds?.filter((id) => id.trim().length > 0) ?? [];
+    if (modelIds.length === 0) continue;
+    return { baseUrl: parsed.baseUrl, apiKey: parsed.apiKey, modelIds };
+  }
+  return undefined;
+}
 
 async function resolveModelKey(
   deps: ExecutorDeps,

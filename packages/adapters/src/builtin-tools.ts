@@ -468,6 +468,32 @@ export const builtinAgentTools: ConnectorTool[] = [
     },
   },
   {
+    name: "image_generate",
+    description:
+      "Generate a picture from a written description and attach it to the chat. Use it when the user asks for an image, illustration, picture, drawing, icon, or logo concept. Write the prompt as a complete visual description — subject, composition, style, colors, and any text to render — because the image model cannot see the conversation. The image is attached inline automatically, so do not write a placeholder such as '[Image: ...]' and do not link to it.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        prompt: {
+          type: "string",
+          description:
+            "Complete visual description of the image: subject, composition, style, colors, lighting, and text to render verbatim.",
+        },
+        name: {
+          type: "string",
+          description:
+            "Short human-readable title for the artifact, such as 'Sunset logo concept'. Reusing a name creates a new version of that artifact.",
+        },
+        model: {
+          type: "string",
+          description:
+            "Image model id on this connection. Omit to use the connection's first declared image model.",
+        },
+      },
+      required: ["prompt"],
+    },
+  },
+  {
     name: "add_mcp_server",
     description:
       "Connect an MCP tool server to this Space when the user asks you to add one and provides the details (URL or command, optional token/headers/env). The server is created immediately and assigned to you. If it needs browser OAuth authorization, an approval card appears in the chat for the user to complete — tell them to click Authorize. Do not invent endpoints; only use details the user provided.",

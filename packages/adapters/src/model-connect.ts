@@ -52,6 +52,7 @@ export function buildModelConnectPlaintext(
       }).apiKey;
     }
     const previousVisionModelIds = sameEndpoint ? previous.visionModelIds : undefined;
+    const previousImageModelIds = sameEndpoint ? previous.imageModelIds : undefined;
     const maxImagesPerPrompt =
       input.maxImagesPerPrompt === null
         ? undefined
@@ -83,6 +84,15 @@ export function buildModelConnectPlaintext(
     const includeVisionModelIds =
       !options?.omitVisionModelIds &&
       (input.supportsImages !== undefined || previousVisionModelIds !== undefined);
+    // Same list shape as visionModelIds, so the same updater applies: the flag says
+    // whether this endpoint's model writes images instead of reading them.
+    const imageModelIds = updateModelImageCapabilities(
+      previousImageModelIds,
+      prepared.modelId,
+      input.generatesImages,
+    );
+    const includeImageModelIds =
+      input.generatesImages !== undefined || previousImageModelIds !== undefined;
     const compatibleCacheCapabilities =
       input.cacheCapabilities ?? compatiblePrevious?.cacheCapabilities;
     const secret: StoredModelSecret = {
@@ -97,6 +107,7 @@ export function buildModelConnectPlaintext(
       ...(contextWindow !== undefined ? { contextWindow } : {}),
       ...(prepared.apiKey ? { apiKey: prepared.apiKey } : {}),
       ...(includeVisionModelIds ? { visionModelIds } : {}),
+      ...(includeImageModelIds ? { imageModelIds } : {}),
       ...(maxImagesPerPrompt !== undefined ? { maxImagesPerPrompt } : {}),
     };
     return serializeModelSecret(secret);
@@ -267,6 +278,11 @@ export function modelCredentialDto(
       parsed.visionModelIds !== undefined
         ? modelIdSupportsImages(parsed.visionModelIds, row.defaultModel)
         : compatibleCredential.supportsImages,
+    // The connection-level capability, not a per-selected-model one: the resolver
+    // reads imageModelIds without consulting defaultModel, so reporting anything
+    // narrower would show an unchecked box for a connection that still generates.
+    generatesImages:
+      parsed.imageModelIds !== undefined ? parsed.imageModelIds.length > 0 : undefined,
     baseUrl: parsed.baseUrl,
     reasoning: parsed.reasoning ?? false,
     ...(credential.thinkingLevel !== undefined || parsed.thinkingLevel !== undefined

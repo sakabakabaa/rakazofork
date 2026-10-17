@@ -283,6 +283,8 @@ export type StoredModelSecret =
       contextWindow?: number;
       visionModelIds?: string[];
       maxImagesPerPrompt?: number;
+      /** Model ids on this endpoint that generate images from a prompt. */
+      imageModelIds?: string[];
     } & StoredModelLimits);
 
 export type PiOAuthConnected = {
@@ -403,6 +405,11 @@ export function parseModelSecret(plaintext: string): StoredModelSecret {
           (modelId): modelId is string => typeof modelId === "string" && modelId.trim().length > 0,
         )
       : undefined;
+    const imageModelIds = Array.isArray(parsed.imageModelIds)
+      ? parsed.imageModelIds.filter(
+          (modelId): modelId is string => typeof modelId === "string" && modelId.trim().length > 0,
+        )
+      : undefined;
     const maxImagesPerPrompt =
       typeof parsed.maxImagesPerPrompt === "number" &&
       Number.isInteger(parsed.maxImagesPerPrompt) &&
@@ -419,6 +426,7 @@ export function parseModelSecret(plaintext: string): StoredModelSecret {
       ...(maxTokens !== undefined ? { maxTokens } : {}),
       ...(contextWindow !== undefined ? { contextWindow } : {}),
       ...(visionModelIds ? { visionModelIds } : {}),
+      ...(imageModelIds ? { imageModelIds } : {}),
       ...(maxImagesPerPrompt !== undefined ? { maxImagesPerPrompt } : {}),
       ...modelLimits(parsed),
     };
@@ -478,6 +486,7 @@ export function serializeModelSecret(secret: StoredModelSecret): string {
       ...(secret.maxTokens !== undefined ? { maxTokens: secret.maxTokens } : {}),
       ...(secret.contextWindow !== undefined ? { contextWindow: secret.contextWindow } : {}),
       ...(secret.visionModelIds !== undefined ? { visionModelIds: secret.visionModelIds } : {}),
+      ...(secret.imageModelIds !== undefined ? { imageModelIds: secret.imageModelIds } : {}),
       ...(secret.maxImagesPerPrompt !== undefined
         ? { maxImagesPerPrompt: secret.maxImagesPerPrompt }
         : {}),

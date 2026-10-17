@@ -27,6 +27,9 @@ export function ModelThinkingOptions({
   contextWindowLabel,
   imagesLabel,
   maxImagesLabel,
+  generatesImages,
+  onGeneratesImagesChange,
+  generatesImagesLabel,
 }: {
   reasoning?: boolean;
   onReasoningChange?: (reasoning: boolean) => void;
@@ -51,6 +54,9 @@ export function ModelThinkingOptions({
   contextWindowLabel?: string;
   imagesLabel?: string;
   maxImagesLabel?: string;
+  generatesImages?: boolean;
+  onGeneratesImagesChange?: (generatesImages: boolean) => void;
+  generatesImagesLabel?: string;
 }) {
   const id = useId();
   const thinkingLevelId = useId();
@@ -58,6 +64,7 @@ export function ModelThinkingOptions({
   const contextWindowId = useId();
   const imagesId = useId();
   const maxImagesId = useId();
+  const generatesImagesId = useId();
   return (
     <details className="mt-4 text-sm text-muted-foreground">
       <summary className="cursor-pointer">{advancedLabel}</summary>
@@ -141,6 +148,17 @@ export function ModelThinkingOptions({
             disabled={disabled}
           />
           {imagesLabel}
+        </label>
+      ) : null}
+      {onGeneratesImagesChange ? (
+        <label htmlFor={generatesImagesId} className="mt-3 flex items-center gap-2">
+          <Checkbox
+            id={generatesImagesId}
+            checked={generatesImages === true}
+            onCheckedChange={(checked) => onGeneratesImagesChange(checked === true)}
+            disabled={disabled}
+          />
+          {generatesImagesLabel}
         </label>
       ) : null}
       {supportsImages && onMaxImagesPerPromptChange ? (

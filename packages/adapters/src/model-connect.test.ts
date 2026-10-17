@@ -579,6 +579,39 @@ describe("compatible connection updates", () => {
       visionModelIds: ["arbitrary-model", "another-vision-model"],
     });
   });
+  it("records which models generate images, apart from which models read them", () => {
+    const generating = buildModelConnectPlaintext({ ...input, generatesImages: true });
+    expect(parseModelSecret(generating)).toMatchObject({
+      imageModelIds: ["arbitrary-model"],
+    });
+    // Reading and writing are separate capabilities on the same connection.
+    expect(parseModelSecret(generating)).not.toHaveProperty("visionModelIds");
+
+    const both = buildModelConnectPlaintext(
+      { ...input, modelId: "reader-model", supportsImages: true },
+      generating,
+    );
+    expect(parseModelSecret(both)).toMatchObject({
+      imageModelIds: ["arbitrary-model"],
+      visionModelIds: ["reader-model"],
+    });
+  });
+  it("drops a model from the generating set without disturbing the reading set", () => {
+    const both = buildModelConnectPlaintext({
+      ...input,
+      generatesImages: true,
+      supportsImages: true,
+    });
+    const stopped = buildModelConnectPlaintext(
+      { ...input, generatesImages: false, supportsImages: undefined },
+      both,
+    );
+
+    expect(parseModelSecret(stopped)).toMatchObject({
+      imageModelIds: [],
+      visionModelIds: ["arbitrary-model"],
+    });
+  });
   it("persists the image limit while preserving it on connection updates", () => {
     const configured = buildModelConnectPlaintext({
       ...input,

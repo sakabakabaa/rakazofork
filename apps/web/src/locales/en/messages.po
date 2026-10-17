@@ -4246,6 +4246,10 @@ msgid "Subscription required"
 msgstr "Subscription required"
 
 #: src/pages/ModelSettingsOverlay.tsx
+msgid "Generates images"
+msgstr "Generates images"
+
+#: src/pages/ModelSettingsOverlay.tsx
 #: src/pages/Onboarding.tsx
 msgid "Supports images"
 msgstr "Supports images"
