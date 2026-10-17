@@ -17,10 +17,15 @@ import {
   prependThreadHistoryPage,
   progressMessageId,
   reduceLiveMessageBlocks,
+  reduceToolCompletionMessages,
   replyMetadata,
   runFailureError,
+  settleInterruptedRunMessages,
   subagentBlockFromPayload,
   takeLiveMessage,
+  toolCallUpdateFromPayload,
+  toolCompletionUpdateFromPayload,
+  toolStepFromCall,
   updateCloudAgentMessages,
   upsertMessageById,
 } from "@rakazo/core";
@@ -383,10 +388,18 @@ export function reduceThreadSnapshot(
     // it up in activeRuns as well or its error would be dropped with it.
     const endedRun =
       primaryEnded ?? prev.activeRuns?.find((candidate) => candidate.id === event.runId) ?? null;
+    const liveId = progressMessageId(event);
+    // The live bubble goes away with the run; a durable message keeps the timeline it was
+    // published with, so an action still running there settles as interrupted.
+    const settled = settleInterruptedRunMessages(
+      prev.messages.filter((message) => message.id !== liveId),
+      event.runId,
+    );
     return {
       ...prev,
       cursor: event.seq,
-      messages: prev.messages.filter((message) => message.id !== progressMessageId(event)),
+      messages:
+        settled ?? prev.messages.filter((message) => message.id !== progressMessageId(event)),
       members: updateMemberStatus(prev.members, event.botId, nextMemberRun?.status ?? "idle"),
       // A failed run stays in run (activeRuns already excludes it) so the transcript can say
       // why it stopped, matching what threads.get returns on the next load.
@@ -421,9 +434,12 @@ export function reduceThreadSnapshot(
   if (event.type === "agent.tool.called") {
     const liveId = progressMessageId(event);
     const { previous, remaining } = takeLiveMessage(prev.messages, liveId);
+    const call = toolCallUpdateFromPayload(event.payload);
+    const step = call ? toolStepFromCall(call) : null;
     const blocks = reduceLiveMessageBlocks(previous?.blocks ?? [], {
       type: "tool",
-      name: String(event.payload.name ?? ""),
+      name: call?.name ?? String(event.payload.name ?? ""),
+      ...(step ? { step } : {}),
     });
     const next: ThreadMessage = {
       id: liveId,
@@ -438,7 +454,18 @@ export function reduceThreadSnapshot(
     return { ...prev, cursor: event.seq, messages: [...remaining, next] };
   }
   if (event.type === "agent.tool.completed") {
-    return { ...prev, cursor: event.seq };
+    const completion = toolCompletionUpdateFromPayload(event.payload);
+    // A completion only settles a row the timeline already shows; with no matching action
+    // the event is audit-only and the cursor is all that moves.
+    const messages = completion
+      ? reduceToolCompletionMessages(
+          prev.messages,
+          progressMessageId(event),
+          event.runId,
+          completion,
+        )
+      : null;
+    return messages ? { ...prev, cursor: event.seq, messages } : { ...prev, cursor: event.seq };
   }
   if (event.type === "thread.subagent") {
     const block = subagentBlockFromPayload(event.payload);

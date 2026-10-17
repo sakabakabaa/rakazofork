@@ -9,7 +9,8 @@ import {
   signup,
 } from "./helpers";
 
-async function openComputer(page: Page) {
+/** Keep the panel's screen preview off the network; these tests only drive the rail. */
+async function stubScreen(page: Page) {
   const screenUrl = "https://screen.example/vnc.html";
   await page.route("https://screen.example/**", (route) =>
     route.fulfill({
@@ -23,14 +24,35 @@ async function openComputer(page: Page) {
       body: JSON.stringify({ json: { url: screenUrl } }),
     }),
   );
-  await page.getByTitle("Agent computer").click();
-  const preview = page.getByTestId("computer-preview");
-  await preview.hover();
-  await preview.getByTestId("computer-preview-open").click();
-  await expect(page.getByRole("button", { name: "Close computer" })).toBeVisible();
 }
 
-test("the computer workspace browses, uploads, and downloads files over the screen", async ({
+/** The destination rail only renders while a bot's panel is open, so make sure one is. */
+async function openBotPanel(page: Page) {
+  const panel = page.getByTestId("side-panel");
+  if ((await panel.getAttribute("data-panel")) === "closed") {
+    await page.getByTitle("Agent computer").click();
+  }
+  await expect(panel).not.toHaveAttribute("data-panel", "closed");
+  return panel;
+}
+
+/**
+ * Switch the side panel to a rail destination. Selecting the open destination would close
+ * the panel, so only click when it is showing something else.
+ */
+async function showDestination(page: Page, name: "Computer" | "Terminal" | "Files") {
+  const id = name.toLowerCase();
+  const panel = await openBotPanel(page);
+  const button = panel.getByTestId("right-panel-rail").getByRole("button", { name, exact: true });
+  // Files and the terminal need a running computer; the rail stays disabled until then.
+  await expect(button).toBeEnabled({ timeout: realSandboxTimeout(90_000, 30_000) });
+  if ((await panel.getAttribute("data-panel")) !== id) await button.click();
+  await expect(panel).toHaveAttribute("data-panel", id);
+  await expect(button).toHaveAttribute("aria-pressed", "true");
+  return panel;
+}
+
+test("the side panel browses, uploads, and downloads files over the screen", async ({
   page,
 }, testInfo) => {
   await signup(page, `workspace-${Date.now()}@rakazo.test`, "password12", "Workspace");
@@ -53,16 +75,18 @@ test("the computer workspace browses, uploads, and downloads files over the scre
     path: "reports/q3.txt",
     contentBase64: Buffer.from("Q3 draft\n").toString("base64"),
   });
-  await openComputer(page);
+  await stubScreen(page);
 
-  await page.getByRole("button", { name: "Files", exact: true }).click();
-  const files = page.getByRole("region", { name: "Files" });
+  // Opening the panel refreshes the thread, so it sees both the running computer and the
+  // control taken above; uploading needs control.
+  const panel = await showDestination(page, "Files");
+  const files = panel.getByTestId("computer-files");
   await files.getByRole("button", { name: /^reports/ }).click();
   await expect(files.getByText("~/reports", { exact: true })).toBeVisible();
   await expect(files.getByRole("button", { name: /^q3\.txt/ })).toBeVisible();
   await files.getByRole("button", { name: "Back" }).click();
   await expect(files.getByText("~/", { exact: true })).toBeVisible();
-  // Changes made elsewhere (a shell, the bot) appear without reopening the window.
+  // Changes made elsewhere (a shell, the bot) appear without reopening the destination.
   await rpc(page, "computer/uploadFile", {
     botId,
     path: "made-in-shell.txt",
@@ -72,6 +96,10 @@ test("the computer workspace browses, uploads, and downloads files over the scre
     timeout: 10_000,
   });
 
+  // Uploading needs control, so the button only exists once the panel sees the takeover.
+  await expect(files.getByRole("button", { name: "Upload" })).toBeVisible({
+    timeout: realSandboxTimeout(90_000, 30_000),
+  });
   await files.locator('input[type="file"]').setInputFiles({
     name: "notes.txt",
     mimeType: "text/plain",
@@ -85,23 +113,23 @@ test("the computer workspace browses, uploads, and downloads files over the scre
   expect(saved.suggestedFilename()).toBe("notes.txt");
   expect(await readFile((await saved.path())!, "utf8")).toBe("Quarterly numbers checked.\n");
 
-  await page.getByRole("button", { name: "Terminal", exact: true }).click();
-  const terminalWindow = page.getByRole("region", { name: "Terminal" });
-  await expect(page.getByTestId("computer-terminal")).toBeVisible();
+  await showDestination(page, "Terminal");
+  const terminal = page.getByTestId("computer-terminal");
+  await expect(terminal).toBeVisible();
   // Holding control adds an interactive shell beside the bot's activity. The fake computer
   // answers through the same capability, web proxy, websocket, and frame protocol.
-  await terminalWindow.getByRole("tab", { name: "Shell" }).click();
+  await panel.getByRole("tab", { name: "Shell" }).click();
   const shell = page.getByTestId("computer-shell");
-  await expect(page.getByTestId("computer-terminal")).toBeHidden();
+  await expect(terminal).toBeHidden();
   await expect(shell).toContainText("$");
-  // Click near the pane's corner: the sidebar resize edge currently overlaps the overlay's middle.
+  // Click near the pane's corner: the panel's resize edge can sit over the middle.
   await shell.click({ position: { x: 24, y: 24 } });
   await page.keyboard.type("echo hallo-shell");
   await page.keyboard.press("Enter");
   await expect(shell).toContainText(/\$ echo hallo-shell\s*hallo-shell/);
   await page.keyboard.type("stty size");
   await page.keyboard.press("Enter");
-  // The window is narrower than a default 80-column terminal, so this proves resize frames arrive.
+  // The panel is narrower than a default 80-column terminal, so this proves resize frames arrive.
   await expect
     .poll(async () => {
       const size = /\$ stty size\s*(\d+) (\d+)/.exec((await shell.textContent()) ?? "");
@@ -111,9 +139,9 @@ test("the computer workspace browses, uploads, and downloads files over the scre
   await captureScreenshot(page, testInfo, "computer-terminal-shell");
 
   // The shell stays connected while the Activity tab is shown.
-  await terminalWindow.getByRole("tab", { name: "Activity" }).click();
-  await expect(page.getByTestId("computer-terminal")).toBeVisible();
-  await terminalWindow.getByRole("tab", { name: "Shell" }).click();
+  await panel.getByRole("tab", { name: "Activity" }).click();
+  await expect(terminal).toBeVisible();
+  await panel.getByRole("tab", { name: "Shell" }).click();
   await expect(shell).toContainText("hallo-shell");
   // A dropped connection gets a fresh shell instead of a dead pane.
   await page.keyboard.type("exit");
@@ -122,33 +150,46 @@ test("the computer workspace browses, uploads, and downloads files over the scre
   await page.keyboard.type("echo wieder-da");
   await page.keyboard.press("Enter");
   await expect(shell).toContainText(/\$ echo wieder-da\s*wieder-da/);
-  await terminalWindow.getByRole("tab", { name: "Activity" }).click();
+  await panel.getByRole("tab", { name: "Activity" }).click();
   await captureScreenshot(page, testInfo, "computer-workspace");
 
-  // The browser button tucks the windows away without closing their sessions.
-  const browser = page.getByRole("button", { name: "Browser", exact: true });
-  await browser.click();
-  await expect(browser).toHaveAttribute("aria-pressed", "true");
+  // The rail switches destinations. The file browser reads the computer again instead of
+  // holding a closed window's state, so the uploaded file is still listed.
+  await showDestination(page, "Computer");
   await expect(files).toBeHidden();
-  await expect(page.getByRole("region", { name: "Terminal" })).toBeHidden();
-  await page.getByRole("button", { name: "Files", exact: true }).click();
-  await expect(files.getByText("Quarterly numbers checked.")).toBeVisible();
+  await showDestination(page, "Files");
+  await expect(
+    panel.getByTestId("computer-files").getByRole("button", { name: /^notes\.txt/ }),
+  ).toBeVisible();
 
-  await page.getByRole("button", { name: "Close Files" }).click();
-  await expect(files).toBeHidden();
+  await panel.getByRole("button", { name: "Close panel", exact: true }).click();
+  await expect(panel).toHaveAttribute("data-panel", "closed");
+  await expect(page.getByTestId("right-panel-rail")).toHaveCount(0);
 
   // Control can end while the computer stays open (released, expired, or handed back for
-  // maintenance). "Open shell" then takes control again and goes straight to the shell.
+  // maintenance). The terminal then offers to take control again instead of a dead shell.
   await rpc(page, "computer/release", { botId });
-  await expect(page.getByText("You have control")).toBeHidden();
-  await expect(terminalWindow.getByRole("tab", { name: "Shell" })).toHaveCount(0);
-  await terminalWindow.getByRole("button", { name: "Open shell" }).click();
-  await expect(page.getByText("You have control")).toBeVisible();
-  await expect(terminalWindow.getByRole("tab", { name: "Shell" })).toHaveAttribute(
-    "aria-selected",
-    "true",
+  // Reopening the Computer destination refreshes the thread, so the panel sees the release.
+  const refreshed = page.waitForResponse(
+    (response) => response.url().includes("/rpc/threads/get") && response.ok(),
   );
-  await expect(page.getByTestId("computer-shell")).toContainText("$");
+  await showDestination(page, "Computer");
+  await refreshed;
+  await showDestination(page, "Terminal");
+  const openShell = panel.getByRole("button", { name: "Open shell" });
+  await expect(openShell).toBeVisible({ timeout: realSandboxTimeout(90_000, 30_000) });
+  await expect(panel.getByRole("tab", { name: "Shell" })).toHaveCount(0);
+  // Taking control from the panel opens the full window, where the shell lives. Wait for
+  // control to arrive there: the window opens before the takeover finishes.
+  await openShell.click();
+  await expect(page.getByText("You have control").first()).toBeVisible({
+    timeout: realSandboxTimeout(90_000, 30_000),
+  });
+  await page.getByRole("button", { name: "Close computer" }).click();
+  await expect(page.getByRole("button", { name: "Close computer" })).toBeHidden();
+  await showDestination(page, "Terminal");
+  await panel.getByRole("tab", { name: "Shell" }).click();
+  await expect(page.getByTestId("computer-shell")).toContainText("$", { timeout: 30_000 });
 });
 
 test("the terminal shows the bot's shell commands and file actions live and after reopening", async ({
@@ -158,9 +199,9 @@ test("the terminal shows the bot's shell commands and file actions live and afte
   await completeOnboarding(page);
   const botId = activeBotId(page);
   await rpc(page, "computer/boot", { botId });
-  await openComputer(page);
+  await stubScreen(page);
+  await showDestination(page, "Terminal");
 
-  await page.getByRole("button", { name: "Terminal", exact: true }).click();
   const terminal = page.getByTestId("computer-terminal");
   await expect(terminal).toBeVisible();
   // Poll the send: the intro run may still be finishing when the test starts.
@@ -210,8 +251,10 @@ test("the terminal shows the bot's shell commands and file actions live and afte
   await expect(terminal).toContainText("Wrote feed-note.txt", { timeout: 30_000 });
   await captureScreenshot(page, testInfo, "computer-terminal-bot-feed");
 
-  await page.getByRole("button", { name: "Close Terminal" }).click();
-  await page.getByRole("button", { name: "Terminal", exact: true }).click();
+  // The feed is rebuilt from the computer's command history when the destination reopens.
+  await showDestination(page, "Computer");
+  await expect(page.getByTestId("computer-terminal")).toBeHidden();
+  await showDestination(page, "Terminal");
   await expect(page.getByTestId("computer-terminal")).toContainText("$ echo terminal-feed-ok");
   await expect(page.getByTestId("computer-terminal")).toContainText("Wrote feed-note.txt");
 });

@@ -1,4 +1,11 @@
-import type { MessageBlock, ThreadMessage } from "@rakazo/contracts";
+import type {
+  MessageBlock,
+  ThreadMessage,
+  ToolActivityStatus,
+  ToolActivityStep,
+  ToolDiff,
+} from "@rakazo/contracts";
+import { TOOL_ACTIVITY_ERROR_MAX_CHARS } from "@rakazo/contracts";
 import { cloudAgentBlockFromPayload } from "./cloud-agent.js";
 
 export function projectMessages(
@@ -13,7 +20,7 @@ export function projectMessages(
     botId?: string | null;
   }>,
 ): ThreadMessage[] {
-  const messages: ThreadMessage[] = [];
+  let messages: ThreadMessage[] = [];
   type LiveProjection = {
     blocks: MessageBlock[];
     meta: {
@@ -99,9 +106,12 @@ export function projectMessages(
     }
     if (event.type === "agent.tool.called") {
       const live = liveProjection(event, createdAt);
+      const call = toolCallUpdateFromPayload(payload);
+      const step = call ? toolStepFromCall(call) : null;
       live.blocks = reduceLiveMessageBlocks(live.blocks, {
         type: "tool",
-        name: String(payload.name ?? ""),
+        name: call?.name ?? String(payload.name ?? ""),
+        ...(step ? { step } : {}),
       });
       live.meta = {
         ...live.meta,
@@ -109,6 +119,26 @@ export function projectMessages(
         botId: event.botId ?? undefined,
         createdAt,
       };
+      continue;
+    }
+    if (event.type === "agent.tool.completed") {
+      const completion = toolCompletionUpdateFromPayload(payload);
+      if (!completion) continue;
+      const live = liveById.get(progressMessageId(event));
+      const liveBlocks = live ? applyToolCompletionToBlocks(live.blocks, completion) : null;
+      if (live && liveBlocks) {
+        live.blocks = liveBlocks;
+        continue;
+      }
+      // A mid-turn publish moves the step timeline onto a durable message; the completion
+      // still has to land on that row, not only on the live projection.
+      const updated = reduceToolCompletionMessages(
+        messages,
+        progressMessageId(event),
+        event.runId ?? undefined,
+        completion,
+      );
+      if (updated) messages = updated;
       continue;
     }
     if (event.type === "thread.cleared") {
@@ -139,6 +169,10 @@ export function projectMessages(
       event.type === "run.cancelled"
     ) {
       clearLive(event);
+      // An action still marked running when its run ends never reported back; the live
+      // bubble is dropped here, but a durable message keeps the timeline it was published with.
+      const settled = settleInterruptedRunMessages(messages, event.runId ?? undefined);
+      if (settled) messages = settled;
     }
   }
   for (const live of liveSubagents.values()) messages.push(live);
@@ -238,12 +272,21 @@ export function runFailureError(event: {
 
 export type LiveMessageUpdate =
   | { type: "progress"; payload: Record<string, unknown> | undefined }
-  | { type: "tool"; name: string };
+  | { type: "tool"; name: string; step?: ToolActivityStep }
+  | { type: "tool.completed"; completion: ToolCompletionUpdate };
 
 export function reduceLiveMessageBlocks(
   blocks: readonly MessageBlock[],
   update: LiveMessageUpdate,
 ): MessageBlock[] {
+  // A step that carries an id is addressable by its completion, so it has to exist as a row
+  // immediately; deferring it behind narration would strand the completion event.
+  if (update.type === "tool" && update.step) {
+    return appendToolStepSegment(flushLiveTail(blocks), update.step);
+  }
+  if (update.type === "tool.completed") {
+    return applyToolCompletionToBlocks(blocks, update.completion) ?? [...blocks];
+  }
   const tail = blocks.at(-1);
   const segments = tail?.kind === "progress" ? blocks.slice(0, -1) : blocks;
   const priorText = liveMessageText(blocks);
@@ -299,6 +342,300 @@ export function appendToolStep(steps: readonly ToolStep[], toolName: string): To
   return [...steps, { label, count: 1 }];
 }
 
+export type ToolCallUpdate = {
+  name: string;
+  executionId?: string;
+  tool?: string;
+  label?: string;
+  summary?: string;
+  startedAt?: string;
+};
+
+export type ToolCompletionUpdate = {
+  name: string;
+  executionId?: string;
+  status?: ToolActivityStatus;
+  outcome?: string;
+  durationMs?: number;
+  error?: string;
+  diff?: ToolDiff;
+};
+
+const toolActivityStatuses: ReadonlySet<unknown> = new Set<ToolActivityStatus>([
+  "running",
+  "succeeded",
+  "failed",
+  "paused",
+  "interrupted",
+]);
+
+/** Completions emitted before the executor added `status` still report an `outcome`. */
+const outcomeStatuses = new Map<string, ToolActivityStatus>([
+  ["succeeded", "succeeded"],
+  ["error", "failed"],
+  ["paused", "paused"],
+]);
+
+export function toolCallUpdateFromPayload(payload: Record<string, unknown>): ToolCallUpdate | null {
+  const name = optionalText(payload.name);
+  if (!name) return null;
+  return {
+    name,
+    executionId: optionalText(payload.executionId),
+    tool: optionalText(payload.tool),
+    label: optionalText(payload.label),
+    summary: optionalText(payload.summary),
+    startedAt: optionalText(payload.startedAt),
+  };
+}
+
+export function toolCompletionUpdateFromPayload(
+  payload: Record<string, unknown>,
+): ToolCompletionUpdate | null {
+  const name = optionalText(payload.name);
+  if (!name) return null;
+  const durationMs = payload.durationMs;
+  return {
+    name,
+    executionId: optionalText(payload.executionId),
+    status: asToolActivityStatus(payload.status),
+    outcome: optionalText(payload.outcome),
+    durationMs:
+      typeof durationMs === "number" && Number.isFinite(durationMs) ? durationMs : undefined,
+    error: optionalText(payload.error),
+    diff: asToolDiff(payload.diff),
+  };
+}
+
+/**
+ * Build the timeline row for one tool start.
+ *
+ * Returns null for the name-only calls persisted before steps carried an id: those keep the
+ * legacy `{ label, count }` shape so a replayed old conversation renders exactly as before.
+ */
+export function toolStepFromCall(call: ToolCallUpdate): ToolActivityStep | null {
+  if (!call.executionId && !call.label) return null;
+  const label = call.label?.trim() || humanizeToolName(call.name);
+  return {
+    ...(call.executionId ? { id: call.executionId } : {}),
+    label,
+    count: 1,
+    tool: call.tool ?? call.name,
+    ...(call.summary ? { summary: call.summary } : {}),
+    status: "running",
+    ...(call.startedAt ? { startedAt: call.startedAt } : {}),
+  };
+}
+
+/**
+ * Append one start to the timeline.
+ *
+ * A step with an id is its own chronological row: repeated calls stay separate even when the
+ * label matches, because each one can be completed independently. Only the legacy id-less
+ * steps keep collapsing into a count.
+ */
+export function appendToolActivityStep(
+  steps: readonly ToolActivityStep[],
+  step: ToolActivityStep,
+): ToolActivityStep[] {
+  if (step.id) {
+    // A re-delivered start (SSE replay) must not add a second row for the same action.
+    if (steps.some((candidate) => candidate.id === step.id)) return [...steps];
+    return [...steps, step];
+  }
+  const last = steps.at(-1);
+  if (last && !last.id && last.label === step.label) {
+    return [...steps.slice(0, -1), { ...last, count: last.count + 1 }];
+  }
+  return [...steps, step];
+}
+
+/** How a completion ended, from `status` when present and the older `outcome` otherwise. */
+export function toolCompletionStatus(completion: ToolCompletionUpdate): ToolActivityStatus {
+  if (completion.status) return completion.status;
+  const mapped = completion.outcome ? outcomeStatuses.get(completion.outcome) : undefined;
+  if (mapped) return mapped;
+  // No explicit outcome: an error still means failure, and anything else settled, which is
+  // the success tick this row showed before completions were applied at all.
+  return completion.error ? "failed" : "succeeded";
+}
+
+function isSettledToolStatus(status: ToolActivityStatus | undefined): boolean {
+  return status === "succeeded" || status === "failed" || status === "interrupted";
+}
+
+/**
+ * Apply a completion to the timeline, in place.
+ *
+ * Returns null when no row belongs to the completion: inventing one would show a finished
+ * action the run never started. The label fallback covers steps persisted without ids and a
+ * completion whose start event the client never saw.
+ */
+export function applyToolCompletion(
+  steps: readonly ToolActivityStep[],
+  completion: ToolCompletionUpdate,
+): ToolActivityStep[] | null {
+  let index = completion.executionId
+    ? steps.findIndex((step) => step.id === completion.executionId)
+    : -1;
+  if (index < 0) {
+    const label = humanizeToolName(completion.name);
+    for (let candidate = steps.length - 1; candidate >= 0; candidate--) {
+      const step = steps[candidate];
+      if (!step || step.label !== label || isSettledToolStatus(step.status)) continue;
+      index = candidate;
+      break;
+    }
+  }
+  const current = index >= 0 ? steps[index] : undefined;
+  if (!current) return null;
+  const error = completion.error?.slice(0, TOOL_ACTIVITY_ERROR_MAX_CHARS);
+  const next: ToolActivityStep = {
+    ...current,
+    status: toolCompletionStatus(completion),
+    ...(completion.durationMs === undefined
+      ? {}
+      : { durationMs: Math.max(0, Math.round(completion.durationMs)) }),
+    ...(error ? { error } : {}),
+    ...(completion.diff ? { diff: completion.diff } : {}),
+  };
+  return steps.map((step, position) => (position === index ? next : step));
+}
+
+/** Apply a completion to the first block that owns a matching step. */
+export function applyToolCompletionToBlocks(
+  blocks: readonly MessageBlock[],
+  completion: ToolCompletionUpdate,
+): MessageBlock[] | null {
+  for (let index = blocks.length - 1; index >= 0; index--) {
+    const block = blocks[index];
+    if (block?.kind !== "steps") continue;
+    const steps = applyToolCompletion(block.steps, completion);
+    if (!steps) continue;
+    return blocks.map((candidate, position) =>
+      position === index ? { ...block, steps } : candidate,
+    );
+  }
+  return null;
+}
+
+/**
+ * Land a completion on whichever message holds its step: the live progress bubble while the
+ * run is streaming, or the durable message a mid-turn publish moved the timeline onto.
+ */
+export function reduceToolCompletionMessages<
+  Message extends { id: string; role?: string; runId?: string | null; blocks: MessageBlock[] },
+>(
+  messages: readonly Message[],
+  liveId: string,
+  runId: string | undefined,
+  completion: ToolCompletionUpdate,
+): Message[] | null {
+  const liveIndex = messages.findIndex((message) => message.id === liveId);
+  if (liveIndex >= 0) {
+    const blocks = applyToolCompletionToBlocks(messages[liveIndex]!.blocks, completion);
+    if (blocks) {
+      return messages.map((message, index) =>
+        index === liveIndex ? { ...message, blocks } : message,
+      );
+    }
+  }
+  for (let index = messages.length - 1; index >= 0; index--) {
+    const message = messages[index]!;
+    if (message.role !== "bot" || !runId || message.runId !== runId) continue;
+    if (message.id.startsWith("progress:")) continue;
+    const blocks = applyToolCompletionToBlocks(message.blocks, completion);
+    if (!blocks) continue;
+    return messages.map((candidate, position) =>
+      position === index ? { ...message, blocks } : candidate,
+    );
+  }
+  return null;
+}
+
+/**
+ * Settle steps a run left running. A run that ended before an action reported back has no
+ * completion to apply, so the row would otherwise spin forever.
+ */
+export function settleInterruptedToolSteps(blocks: readonly MessageBlock[]): MessageBlock[] | null {
+  let changed = false;
+  const next = blocks.map((block) => {
+    if (block.kind !== "steps") return block;
+    let blockChanged = false;
+    const steps = block.steps.map((step) => {
+      if (step.status !== "running") return step;
+      blockChanged = true;
+      return { ...step, status: "interrupted" as const };
+    });
+    if (!blockChanged) return block;
+    changed = true;
+    return { ...block, steps };
+  });
+  return changed ? next : null;
+}
+
+/** Settle the running steps of every message a finished run published. */
+export function settleInterruptedRunMessages<
+  Message extends { id: string; runId?: string | null; blocks: MessageBlock[] },
+>(messages: readonly Message[], runId: string | undefined): Message[] | null {
+  if (!runId) return null;
+  let changed = false;
+  const next = messages.map((message) => {
+    if (message.runId !== runId || message.id.startsWith("progress:")) return message;
+    const blocks = settleInterruptedToolSteps(message.blocks);
+    if (!blocks) return message;
+    changed = true;
+    return { ...message, blocks };
+  });
+  return changed ? next : null;
+}
+
+function appendToolStepSegment(
+  segments: readonly MessageBlock[],
+  step: ToolActivityStep,
+): MessageBlock[] {
+  const last = segments.at(-1);
+  const steps = appendToolActivityStep(last?.kind === "steps" ? last.steps : [], step);
+  if (last?.kind === "steps") return [...segments.slice(0, -1), { ...last, steps }];
+  return [...segments, { kind: "steps", steps }];
+}
+
+/** Settle a trailing progress bubble into text (plus any held-back legacy calls) first. */
+function flushLiveTail(blocks: readonly MessageBlock[]): MessageBlock[] {
+  const tail = blocks.at(-1);
+  if (tail?.kind !== "progress") return [...blocks];
+  let flushed = appendTextSegment(blocks.slice(0, -1), tail.text);
+  for (const name of tail.pendingToolNames ?? []) flushed = appendToolCallSegment(flushed, name);
+  return flushed;
+}
+
+function optionalText(value: unknown): string | undefined {
+  return typeof value === "string" && value ? value : undefined;
+}
+
+function asToolActivityStatus(value: unknown): ToolActivityStatus | undefined {
+  return toolActivityStatuses.has(value) ? (value as ToolActivityStatus) : undefined;
+}
+
+function asToolDiff(value: unknown): ToolDiff | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  const path = optionalText(record.path);
+  if (!path) return undefined;
+  const diff: ToolDiff = { path };
+  if (typeof record.patch === "string") diff.patch = record.patch;
+  if (isCount(record.additions)) diff.additions = record.additions;
+  if (isCount(record.deletions)) diff.deletions = record.deletions;
+  if (typeof record.truncated === "boolean") diff.truncated = record.truncated;
+  const unavailableReason = optionalText(record.unavailableReason);
+  if (unavailableReason) diff.unavailableReason = unavailableReason;
+  return diff;
+}
+
+function isCount(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0;
+}
+
 export type ToolCallStreak = { key: string | undefined; count: number };
 
 export function trackToolCallStreak(
@@ -330,6 +667,20 @@ export function appendTextSegment(segments: readonly MessageBlock[], text: strin
     return [...segments.slice(0, -1), { kind: "text", text: last.text + text }];
   }
   return [...segments, { kind: "text", text }];
+}
+
+/**
+ * Append a fully described action. The executor knows the tool, its safe summary and the
+ * execution id at call time; the name-only variant below remains for older callers.
+ */
+export function appendToolStepToSegments(
+  segments: readonly MessageBlock[],
+  step: ToolActivityStep,
+): MessageBlock[] {
+  const last = segments.at(-1);
+  const steps = appendToolActivityStep(last?.kind === "steps" ? last.steps : [], step);
+  if (last?.kind === "steps") return [...segments.slice(0, -1), { ...last, steps }];
+  return [...segments, { kind: "steps", steps }];
 }
 
 export function appendToolCallSegment(

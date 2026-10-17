@@ -55,9 +55,9 @@ test("tool activity shows for live and finished runs when the user turned it on"
     await expect(page.getByTestId("message-bot-bubble")).toHaveCount(0);
     const liveCard = page.getByTestId("tool-activity");
     await expect(liveCard).toHaveJSProperty("open", true);
-    await expect(liveCard.locator("summary")).toContainText("Working… · 8 tools");
-    await expect(page.getByTestId("tool-rows-hidden")).toHaveText("+2 earlier steps");
-    await expect(page.getByTestId("tool-rows")).not.toContainText("Open calendar");
+    await expect(liveCard.locator("summary")).toContainText("Working");
+    // The timeline is complete while streaming, so earlier actions are present too.
+    await expect(page.getByTestId("tool-rows")).toContainText("Open calendar");
     await expect(page.getByTestId("tool-rows")).toContainText("Check conflicts");
     await expect(page.locator("body")).toHaveJSProperty("scrollWidth", viewport.width);
     await captureScreenshot(page, testInfo, `default-live-${viewport.name}`);
@@ -70,12 +70,11 @@ test("tool activity shows for live and finished runs when the user turned it on"
     const doneCard = page.getByTestId("tool-activity");
     await expect(doneCard).toHaveCount(1);
     await expect(doneCard).toHaveJSProperty("open", false);
-    await expect(doneCard.locator("summary")).toContainText("Done · 8 tools · 12s");
+    await expect(doneCard.locator("summary")).toContainText(/Completed \d+ actions? · \d+s/);
     await captureScreenshot(page, testInfo, `default-done-collapsed-${viewport.name}`);
 
     await doneCard.locator("summary").click();
     await expect(doneCard).toHaveJSProperty("open", true);
-    await expect(page.getByTestId("tool-rows-hidden")).toHaveCount(0);
     await expect(page.getByTestId("tool-rows")).toContainText("Open calendar");
     await expect(page.getByTestId("tool-rows")).toContainText("Check conflicts");
     await expect(page.locator("body")).toHaveJSProperty("scrollWidth", viewport.width);
@@ -103,7 +102,7 @@ test("the settings toggle hides and restores tool activity", async ({ page }, te
   await openThread(page, "done");
   await expect(page.getByTestId("message-bot-bubble")).toHaveText(REPLY_TEXT);
   await expect(page.getByTestId("tool-activity")).toHaveCount(0);
-  await expect(page.getByText("Done · 8 tools", { exact: false })).toHaveCount(0);
+  await expect(page.getByText("Completed", { exact: false })).toHaveCount(0);
   await captureScreenshot(page, testInfo, "off-done");
 
   await openThread(page, "live");
@@ -117,9 +116,7 @@ test("the settings toggle hides and restores tool activity", async ({ page }, te
 
   await openThread(page, "done");
   await expect(page.getByTestId("tool-activity")).toHaveCount(1);
-  await expect(page.getByTestId("tool-activity").locator("summary")).toContainText(
-    "Done · 8 tools",
-  );
+  await expect(page.getByTestId("tool-activity").locator("summary")).toContainText(/Completed/);
   await captureScreenshot(page, testInfo, "on-again-done");
 });
 
@@ -144,7 +141,7 @@ test("the chat transcript shows tool activity when turned on and hides it when t
   });
   const card = transcript.getByTestId("tool-activity");
   await expect(card.first()).toBeVisible();
-  await expect(card.first().locator("summary")).toContainText(/Done · \d+ tools?/);
+  await expect(card.first().locator("summary")).toContainText(/Completed \d+ actions?/);
   await expect(card.first()).toHaveJSProperty("open", false);
   await card.first().locator("summary").click();
   await expect(transcript.getByTestId("tool-rows").first()).toBeVisible();

@@ -16,6 +16,7 @@ import {
   persistentComputerInstruction,
   runNotificationsEnabled,
   selectBuiltinToolsForRun,
+  settleMessageSteps,
   settleSteeringAttachmentLoads,
   threadContextForRun,
   toolCompletionAuditPayload,
@@ -27,6 +28,61 @@ import {
 } from "./executor.js";
 import { UnavailableModelForAuthError } from "./model-selection.js";
 import { RetiredModelCredentialError, serializeModelSecret } from "./pi-oauth.js";
+
+describe("settling the final message steps", () => {
+  const steps = (list: unknown[]): MessageBlock[] => [{ kind: "steps", steps: list as never }];
+
+  it("applies the recorded outcome to the matching action", () => {
+    const blocks = steps([
+      { id: "a", label: "Write file", count: 1, status: "running" },
+      { id: "b", label: "Read file", count: 1, status: "running" },
+    ]);
+    const settled = settleMessageSteps(
+      blocks,
+      new Map([
+        ["b", { label: "Read file", count: 1, status: "succeeded" as const, durationMs: 8 }],
+        ["a", { label: "Write file", count: 1, status: "failed" as const }],
+      ]),
+    );
+    const [block] = settled;
+    expect(block?.kind).toBe("steps");
+    const rows = block?.kind === "steps" ? block.steps : [];
+    expect(rows[0]).toMatchObject({ status: "failed" });
+    expect(rows[1]).toMatchObject({ status: "succeeded", durationMs: 8 });
+  });
+
+  it("carries a captured diff onto the action", () => {
+    const blocks = steps([{ id: "a", label: "Write file", count: 1, status: "running" }]);
+    const diff = { path: "notes/a.txt", patch: "+one\n", additions: 1, deletions: 0 };
+    const [block] = settleMessageSteps(
+      blocks,
+      new Map([["a", { label: "Write file", count: 1, status: "succeeded" as const, diff }]]),
+    );
+    const rows = block?.kind === "steps" ? block.steps : [];
+    expect(rows[0]?.diff).toEqual(diff);
+  });
+
+  it("marks an action with no completion as interrupted, not as still running", () => {
+    const blocks = steps([{ id: "a", label: "Write file", count: 1, status: "running" }]);
+    // The run ended without this action reporting back; a spinning row would be a lie.
+    const [block] = settleMessageSteps(
+      blocks,
+      new Map([["other", { label: "x", count: 1, status: "succeeded" as const }]]),
+    );
+    const rows = block?.kind === "steps" ? block.steps : [];
+    expect(rows[0]?.status).toBe("interrupted");
+  });
+
+  it("leaves legacy steps without ids untouched", () => {
+    const blocks = steps([{ label: "Write file", count: 2 }]);
+    const [block] = settleMessageSteps(
+      blocks,
+      new Map([["a", { label: "Write file", count: 1, status: "succeeded" as const }]]),
+    );
+    const rows = block?.kind === "steps" ? block.steps : [];
+    expect(rows[0]).toEqual({ label: "Write file", count: 2 });
+  });
+});
 
 describe("bot tool permissions", () => {
   it("keeps private goal tools out of groups, channels and ticket workers", () => {
@@ -124,6 +180,7 @@ describe("tool completion audit", () => {
       executionId: "call-1",
       durationMs: 13,
       outcome: "succeeded",
+      status: "succeeded",
       contentTypes: ["text", "image"],
       frameId: "frame-1",
       capturedAt: "2026-09-07T00:00:00.000Z",
@@ -155,6 +212,7 @@ describe("tool completion audit", () => {
         type: "agent.tool.completed",
         payload: expect.objectContaining({
           outcome: "error",
+          status: "failed",
           error: "Bearer [redacted]",
         }),
       }),
@@ -176,6 +234,7 @@ describe("tool completion audit", () => {
     });
     expect(toolCompletionAuditPayload(completion)).toMatchObject({
       outcome: "error",
+      status: "failed",
       error: "destination rejected the record",
     });
     expect(completion).not.toHaveProperty("result");
@@ -197,6 +256,7 @@ describe("tool completion audit", () => {
 
     expect(payload).toMatchObject({
       outcome: "error",
+      status: "failed",
       error: "ENOENT: no such file or directory, open '/missing'",
     });
   });
@@ -216,6 +276,7 @@ describe("tool completion audit", () => {
     };
     expect(toolCompletionAuditPayload(completion)).toMatchObject({
       outcome: "error",
+      status: "failed",
       error: message,
     });
     expect(completion.result).toBe(result);
@@ -242,6 +303,7 @@ describe("tool completion audit", () => {
       executionId: "call-1",
       durationMs: 4,
       outcome: "error",
+      status: "failed",
       error: "Rejected [redacted] using Bearer [redacted]",
     });
   });
@@ -261,6 +323,7 @@ describe("tool completion audit", () => {
         executionId: "call-1",
         durationMs: 4,
         outcome: "succeeded",
+        status: "succeeded",
       });
     },
   );
@@ -274,12 +337,14 @@ describe("tool completion audit", () => {
     };
     expect(toolCompletionAuditPayload(completion, ["fake-provider-key"])).toMatchObject({
       outcome: "error",
+      status: "failed",
       error: "Rejected [redacted]",
     });
     expect(
       toolCompletionAuditPayload({ ...completion, error: new Error("request failed") }),
     ).toMatchObject({
       outcome: "error",
+      status: "failed",
       error: "request failed",
     });
     expect(toolCompletionAuditPayload({ ...completion, paused: true })).toMatchObject({

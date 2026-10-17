@@ -89,6 +89,72 @@ const ChartBlock = z
     });
   });
 
+/**
+ * How one action in the activity timeline ended. `paused` is an approval gate waiting
+ * on the user; `interrupted` is a run that stopped before the action reported back.
+ */
+export const ToolActivityStatus = z.enum([
+  "running",
+  "succeeded",
+  "failed",
+  "paused",
+  "interrupted",
+]);
+export type ToolActivityStatus = z.infer<typeof ToolActivityStatus>;
+
+/** Cap on a rendered patch. Larger changes are truncated here and offered as an artifact. */
+export const TOOL_DIFF_MAX_CHARS = 24_000;
+/** Cap on the sanitized error line shown under a failed action. */
+export const TOOL_ACTIVITY_ERROR_MAX_CHARS = 300;
+/** Cap on an action summary, so a long argument cannot become the row text. */
+export const TOOL_ACTIVITY_SUMMARY_MAX_CHARS = 160;
+
+/**
+ * A file change attached to an action.
+ *
+ * `patch` is absent whenever a diff could not be produced safely — a binary file, an
+ * oversized change, or an edit whose before/after state was never captured. Callers must
+ * render `unavailableReason` rather than inventing a diff from partial data.
+ */
+export const ToolDiff = z.object({
+  /** Workspace-relative path. Never an absolute host path. */
+  path: z.string(),
+  patch: z.string().optional(),
+  additions: z.number().int().nonnegative().optional(),
+  deletions: z.number().int().nonnegative().optional(),
+  /** The patch was cut at TOOL_DIFF_MAX_CHARS; the full change lives in an artifact. */
+  truncated: z.boolean().optional(),
+  unavailableReason: z.string().optional(),
+});
+export type ToolDiff = z.infer<typeof ToolDiff>;
+
+/**
+ * One entry in a run's activity timeline.
+ *
+ * Written by the executor at tool start and updated at completion. `id` correlates the
+ * two: without it a completion cannot find its row, which is why a failed action used to
+ * keep its success tick. `count` and the label-only shape predate this and still parse,
+ * so stored messages from before the change keep rendering.
+ */
+export const ToolActivityStep = z.object({
+  /** Run-local, stable across the start and completion of one action. */
+  id: z.string().optional(),
+  label: z.string(),
+  count: z.number().int().positive().default(1),
+  /** Raw tool name, so the client can pick a tool-specific icon without parsing the label. */
+  tool: z.string().optional(),
+  /** Short, sanitized description of what the action did. Never raw arguments. */
+  summary: z.string().max(TOOL_ACTIVITY_SUMMARY_MAX_CHARS).optional(),
+  status: ToolActivityStatus.optional(),
+  /** ISO timestamp, so a reloaded timeline can show order and duration. */
+  startedAt: z.string().optional(),
+  durationMs: z.number().int().nonnegative().optional(),
+  /** Sanitized, truncated error summary for a failed action. */
+  error: z.string().max(TOOL_ACTIVITY_ERROR_MAX_CHARS).optional(),
+  diff: ToolDiff.optional(),
+});
+export type ToolActivityStep = z.infer<typeof ToolActivityStep>;
+
 export const SecretAskPurpose = z.enum(["otp", "password", "api_key"]);
 export type SecretAskPurpose = z.infer<typeof SecretAskPurpose>;
 
@@ -171,7 +237,7 @@ export const MessageBlock = z.discriminatedUnion("kind", [
   }),
   z.object({
     kind: z.literal("steps"),
-    steps: z.array(z.object({ label: z.string(), count: z.number().int().positive() })),
+    steps: z.array(ToolActivityStep),
     durationMs: z.number().int().nonnegative().optional(),
   }),
   z.object({

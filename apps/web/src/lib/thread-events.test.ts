@@ -4,7 +4,7 @@ import type {
   ThreadMessage,
   ThreadSnapshot,
 } from "@rakazo/contracts";
-import { withLiveStreamingProgress } from "@rakazo/core";
+import { projectMessages, withLiveStreamingProgress } from "@rakazo/core";
 import { describe, expect, it } from "vitest";
 import {
   activeThreadRuns,
@@ -1037,7 +1037,7 @@ describe("thread event reduction", () => {
     ]);
   });
 
-  it("advances past tool completion audit events without adding a visible message", () => {
+  it("settles a legacy step from a completion that carries no id", () => {
     const initial = snapshot(
       [
         message(
@@ -1059,7 +1059,272 @@ describe("thread event reduction", () => {
     );
 
     expect(next?.cursor).toBe(5);
-    expect(next?.messages).toEqual(initial.messages);
+    // No second row and no id invented: the stored step keeps its shape and gains the outcome.
+    expect(next?.messages).toHaveLength(1);
+    expect(next?.messages[0]?.blocks).toEqual([
+      { kind: "steps", steps: [{ label: "Slack find channels", count: 1, status: "succeeded" }] },
+    ]);
+  });
+
+  it("settles the started row instead of discarding its completion", () => {
+    const started = reduceThreadSnapshot(
+      snapshot([]),
+      event({
+        type: "agent.tool.called",
+        seq: 4,
+        runId: "run-1",
+        payload: {
+          name: "shell",
+          executionId: "exec-1",
+          label: "Run tests",
+          startedAt: "2026-08-16T00:00:00.000Z",
+        },
+      }),
+    );
+    const completed = reduceThreadSnapshot(
+      started,
+      event({
+        type: "agent.tool.completed",
+        seq: 5,
+        runId: "run-1",
+        payload: { name: "shell", executionId: "exec-1", status: "succeeded", durationMs: 900 },
+      }),
+    );
+
+    expect(completed?.messages).toHaveLength(1);
+    expect(completed?.messages[0]?.blocks).toEqual([
+      {
+        kind: "steps",
+        steps: [
+          {
+            id: "exec-1",
+            label: "Run tests",
+            count: 1,
+            tool: "shell",
+            status: "succeeded",
+            startedAt: "2026-08-16T00:00:00.000Z",
+            durationMs: 900,
+          },
+        ],
+      },
+    ]);
+  });
+
+  it("marks a failed completion and carries its error", () => {
+    const started = reduceThreadSnapshot(
+      snapshot([]),
+      event({
+        type: "agent.tool.called",
+        seq: 4,
+        runId: "run-1",
+        payload: { name: "shell", executionId: "exec-1" },
+      }),
+    );
+    const completed = reduceThreadSnapshot(
+      started,
+      event({
+        type: "agent.tool.completed",
+        seq: 5,
+        runId: "run-1",
+        payload: { name: "shell", executionId: "exec-1", outcome: "error", error: "exit code 1" },
+      }),
+    );
+
+    expect(completed?.messages[0]?.blocks).toEqual([
+      {
+        kind: "steps",
+        steps: [
+          {
+            id: "exec-1",
+            label: "Shell",
+            count: 1,
+            tool: "shell",
+            status: "failed",
+            error: "exit code 1",
+          },
+        ],
+      },
+    ]);
+  });
+
+  it("ignores a completion for an unknown execution id", () => {
+    const started = reduceThreadSnapshot(
+      snapshot([]),
+      event({
+        type: "agent.tool.called",
+        seq: 4,
+        runId: "run-1",
+        payload: { name: "shell", executionId: "exec-1" },
+      }),
+    );
+    const completed = reduceThreadSnapshot(
+      started,
+      event({
+        type: "agent.tool.completed",
+        seq: 5,
+        runId: "run-1",
+        payload: { name: "unknown_tool", executionId: "exec-9", status: "failed" },
+      }),
+    );
+
+    expect(completed?.cursor).toBe(5);
+    expect(completed?.messages).toEqual(started?.messages);
+  });
+
+  it("keeps consecutive calls with different ids as separate rows", () => {
+    const first = reduceThreadSnapshot(
+      snapshot([]),
+      event({
+        type: "agent.tool.called",
+        seq: 4,
+        runId: "run-1",
+        payload: { name: "shell", executionId: "exec-1" },
+      }),
+    );
+    const second = reduceThreadSnapshot(
+      first,
+      event({
+        type: "agent.tool.called",
+        seq: 5,
+        runId: "run-1",
+        payload: { name: "shell", executionId: "exec-2" },
+      }),
+    );
+
+    expect(second?.messages[0]?.blocks).toEqual([
+      {
+        kind: "steps",
+        steps: [
+          { id: "exec-1", label: "Shell", count: 1, tool: "shell", status: "running" },
+          { id: "exec-2", label: "Shell", count: 1, tool: "shell", status: "running" },
+        ],
+      },
+    ]);
+  });
+
+  it("keeps reducing stored legacy steps that have no ids or statuses", () => {
+    const initial = snapshot([
+      message("progress:run-1", [
+        {
+          kind: "steps",
+          steps: [
+            { label: "Slack find channels", count: 2 },
+            { label: "Shell", count: 1 },
+          ],
+        },
+      ]),
+    ]);
+
+    const next = reduceThreadSnapshot(
+      initial,
+      event({
+        type: "agent.tool.called",
+        seq: 5,
+        runId: "run-1",
+        payload: { name: "SLACK_FIND_CHANNELS" },
+      }),
+    );
+
+    expect(next?.messages[0]?.blocks).toEqual([
+      {
+        kind: "steps",
+        steps: [
+          { label: "Slack find channels", count: 2 },
+          { label: "Shell", count: 1 },
+          { label: "Slack find channels", count: 1 },
+        ],
+      },
+    ]);
+  });
+
+  it("settles the same status in the live reducer and in the history replay", () => {
+    const events = [
+      event({
+        type: "thread.progress",
+        seq: 4,
+        runId: "run-1",
+        payload: { text: "Checking the repo." },
+      }),
+      event({
+        type: "agent.tool.called",
+        seq: 5,
+        runId: "run-1",
+        payload: {
+          name: "shell",
+          executionId: "exec-1",
+          label: "Run tests",
+          startedAt: "2026-08-16T00:00:00.000Z",
+        },
+      }),
+      event({
+        type: "agent.tool.completed",
+        seq: 6,
+        runId: "run-1",
+        payload: {
+          name: "shell",
+          executionId: "exec-1",
+          status: "failed",
+          durationMs: 250,
+          error: "exit code 1",
+        },
+      }),
+    ];
+
+    const live = events.reduce<ThreadSnapshot | null>(
+      (state, next) => reduceThreadSnapshot(state, next),
+      snapshot([]),
+    );
+    const replay = projectMessages(events);
+
+    expect(live?.messages[0]?.blocks).toEqual(replay[0]?.blocks);
+    expect(live?.messages[0]?.blocks).toEqual([
+      { kind: "text", text: "Checking the repo." },
+      {
+        kind: "steps",
+        steps: [
+          {
+            id: "exec-1",
+            label: "Run tests",
+            count: 1,
+            tool: "shell",
+            status: "failed",
+            startedAt: "2026-08-16T00:00:00.000Z",
+            durationMs: 250,
+            error: "exit code 1",
+          },
+        ],
+      },
+    ]);
+  });
+
+  it("settles a running step the run ended without completing", () => {
+    const durable: ThreadMessage = {
+      ...message("message-1", [
+        {
+          kind: "steps",
+          steps: [{ id: "exec-1", label: "Run tests", count: 1, status: "running" }],
+        },
+      ]),
+      runId: "run-1",
+    };
+    const initial = snapshot([durable]);
+
+    const ended = reduceThreadSnapshot(
+      initial,
+      event({ type: "run.cancelled", seq: 5, runId: "run-1" }),
+    );
+
+    expect(ended?.messages).toEqual([
+      {
+        ...durable,
+        blocks: [
+          {
+            kind: "steps",
+            steps: [{ id: "exec-1", label: "Run tests", count: 1, status: "interrupted" }],
+          },
+        ],
+      },
+    ]);
   });
 
   it("holds a tool call that lands mid-sentence until the sentence completes", () => {

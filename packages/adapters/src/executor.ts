@@ -11,6 +11,7 @@ import type {
   ArtifactStore,
   AutoReviewProvider,
   BrowserProvider,
+  ComputerFileEntry,
   ComputerRef,
   ConnectorCall,
   ConnectorProvider,
@@ -35,7 +36,13 @@ import {
   routineWakeupJob,
   runContinueJob,
 } from "@rakazo/adapter-kit";
-import type { ComputerCommand, MessageBlock, RunStatus } from "@rakazo/contracts";
+import type {
+  ComputerCommand,
+  MessageBlock,
+  RunStatus,
+  ToolActivityStep,
+  ToolDiff,
+} from "@rakazo/contracts";
 import {
   ARTIFACT_NAME_MAX_LENGTH,
   ATTACHMENT_MAX_BYTES,
@@ -55,7 +62,7 @@ import {
 import type { ActionApprovalRule, ToolCallStreak } from "@rakazo/core";
 import {
   appendTextSegment,
-  appendToolCallSegment,
+  appendToolStepToSegments,
   applyJudgeDecision,
   assertTransition,
   blocksToAgentHistoryText,
@@ -87,6 +94,7 @@ import {
   renderBotDirectory,
   resolveActionApprovalDetail,
   sandboxCommandTimeoutMs,
+  toolCompletionStatus,
   toolRequiresApproval,
   toolRequiresExplicitApproval,
   truncatedPlainText,
@@ -382,6 +390,12 @@ import {
   listBoardTickets,
   updateTicket,
 } from "./ticket-tools.js";
+import {
+  buildToolDiff,
+  redactActivityText,
+  snapshotWorkspaceChanges,
+  toolActivitySummary,
+} from "./tool-activity.js";
 import { advanceToolCallLoopGuard, loopGuardStopText } from "./tool-loop.js";
 import { textContentArg } from "./tool-text.js";
 import {
@@ -428,6 +442,53 @@ export function voiceCallInstruction(disabled?: ReadonlySet<string>): string {
     : VOICE_CALL_BASE_INSTRUCTION;
 }
 const MAX_MODEL_FILE_BYTES = 250_000;
+
+/**
+ * Bounds for the shell-command diff snapshot.
+ *
+ * A shell command does not say which files it touched, so the workspace is compared
+ * before and after. That is a walk of the bot's home over the sandbox API, which is not
+ * free, so it is capped on every axis and skipped entirely past the caps — an action
+ * then reports that a diff is unavailable rather than showing a partial one.
+ */
+const WORKSPACE_SNAPSHOT_MAX_FILES = 200;
+const WORKSPACE_SNAPSHOT_MAX_FILE_BYTES = 512 * 1024;
+const WORKSPACE_SNAPSHOT_MAX_TOTAL_BYTES = 4 * 1024 * 1024;
+const WORKSPACE_SNAPSHOT_MAX_DEPTH = 6;
+
+/** Extensions worth reading. Everything else is skipped unread, so a home full of media
+ *  does not cost a read per file just to discover it is binary. */
+const SNAPSHOT_TEXT_EXTENSIONS = new Set([
+  "c",
+  "conf",
+  "css",
+  "csv",
+  "go",
+  "h",
+  "html",
+  "ini",
+  "java",
+  "js",
+  "json",
+  "jsx",
+  "kt",
+  "md",
+  "mjs",
+  "php",
+  "py",
+  "rb",
+  "rs",
+  "sh",
+  "sql",
+  "svg",
+  "toml",
+  "ts",
+  "tsx",
+  "txt",
+  "xml",
+  "yaml",
+  "yml",
+]);
 const TURN_ATTACHMENT_UNAVAILABLE =
   "An attachment in this message could not be loaded. Tell the user the attachment was unavailable and do not guess its contents.";
 const STEERING_ATTACHMENT_UNAVAILABLE = TURN_ATTACHMENT_UNAVAILABLE;
@@ -2758,6 +2819,9 @@ export function toolCompletionAuditPayload(
     executionId: redactSecrets(completion.executionId, secrets),
     durationMs,
     outcome: completion.paused ? "paused" : error === undefined ? "succeeded" : "error",
+    // Same fact as `outcome`, in the vocabulary the activity timeline stores. `outcome`
+    // stays for existing consumers; this saves every reader mapping it themselves.
+    status: completion.paused ? "paused" : error === undefined ? "succeeded" : "failed",
   };
   if (error !== undefined) {
     payload.error = sanitizeConnectorError(error, secrets);
@@ -2789,13 +2853,134 @@ export function toolCompletionAuditPayload(
   return payload;
 }
 
+/**
+ * Diffs captured while an action ran, keyed by execution id.
+ *
+ * The tool branch sees before/after content; the completion event is emitted later, from
+ * the runtime's callback, which only receives the completion. This carries the diff
+ * across that gap for the life of one run.
+ */
+export type ToolDiffRegistry = Map<string, ToolDiff>;
+
+/**
+ * Read every text file in the bot's home into memory, within the snapshot bounds.
+ *
+ * Returns undefined once any bound is exceeded, so callers report "unavailable" instead
+ * of diffing a partial view of the workspace — a partial snapshot would show unchanged
+ * files as deleted.
+ */
+/**
+ * Whether a shell command could plausibly change the workspace.
+ *
+ * A read-only command must not pay for two directory walks. This is deliberately a cheap
+ * negative test: when unsure it answers yes, because a missed diff is worse than a
+ * wasted snapshot.
+ */
+/**
+ * Copy the outcomes seen during the run onto the in-memory segments.
+ *
+ * `messageSegments` is what gets persisted as the final message. The live reducers settle
+ * the streaming view from the event stream, but they never see this array, so without
+ * this pass every stored action would still read `running`.
+ */
+export function settleMessageSteps(
+  blocks: readonly MessageBlock[],
+  outcomes: ReadonlyMap<string, ToolActivityStep>,
+): MessageBlock[] {
+  if (outcomes.size === 0) return [...blocks];
+  return blocks.map((block) => {
+    if (block.kind !== "steps") return block;
+    return {
+      ...block,
+      steps: block.steps.map((step) => {
+        const outcome = step.id ? outcomes.get(step.id) : undefined;
+        if (!outcome) return step.status === "running" ? { ...step, status: "interrupted" } : step;
+        return {
+          ...step,
+          status: outcome.status,
+          ...(outcome.durationMs !== undefined ? { durationMs: outcome.durationMs } : {}),
+          ...(outcome.diff ? { diff: outcome.diff } : {}),
+        };
+      }),
+    };
+  });
+}
+
+export function shellCommandMayWriteWorkspace(command: string): boolean {
+  const writes =
+    /(^|[;&|]|\s)(>|>>|tee|cp|mv|rm|mkdir|touch|sed\s+-i|truncate|dd|install|patch|ln|chmod|chown|unzip|tar\s+-?x|git\s+(apply|checkout|reset|restore|merge|rebase|pull|stash))\b/;
+  if (writes.test(command)) return true;
+  // Interpreters and build tools can write without any of the above appearing.
+  const opaque =
+    /(^|[;&|]|\s)(python3?|node|npm|pnpm|yarn|bun|ruby|perl|php|make|cmake|cargo|go|javac|mvn|gradle|sh|bash|zsh)\b/;
+  return opaque.test(command);
+}
+
+export async function captureWorkspaceSnapshot(
+  deps: Pick<ExecutorDeps, "sandbox">,
+  input: { computer: ComputerRef; root: string; context: AdapterContext },
+): Promise<Map<string, Uint8Array> | undefined> {
+  const files = new Map<string, Uint8Array>();
+  let totalBytes = 0;
+  let truncated = false;
+
+  const walk = async (relative: string, depth: number): Promise<void> => {
+    if (truncated || depth > WORKSPACE_SNAPSHOT_MAX_DEPTH) return;
+    let entries: ComputerFileEntry[];
+    try {
+      entries = await deps.sandbox.listFiles(input.computer, relative, input.context);
+    } catch {
+      // An unreadable directory is not an empty one; refuse the whole snapshot.
+      truncated = true;
+      return;
+    }
+    for (const entry of entries) {
+      if (truncated) return;
+      if (entry.kind === "dir") {
+        await walk(entry.path, depth + 1);
+        continue;
+      }
+      if (files.size >= WORKSPACE_SNAPSHOT_MAX_FILES) {
+        truncated = true;
+        return;
+      }
+      if (entry.size > WORKSPACE_SNAPSHOT_MAX_FILE_BYTES) continue;
+      const extension = entry.path.slice(entry.path.lastIndexOf(".") + 1).toLowerCase();
+      if (!SNAPSHOT_TEXT_EXTENSIONS.has(extension)) continue;
+      if (totalBytes + entry.size > WORKSPACE_SNAPSHOT_MAX_TOTAL_BYTES) {
+        truncated = true;
+        return;
+      }
+      try {
+        const bytes = await deps.sandbox.readFile(input.computer, entry.path, input.context, {
+          maxBytes: WORKSPACE_SNAPSHOT_MAX_FILE_BYTES,
+        });
+        totalBytes += bytes.byteLength;
+        files.set(entry.path, bytes);
+      } catch {
+        truncated = true;
+        return;
+      }
+    }
+  };
+
+  await walk(input.root, 0);
+  return truncated ? undefined : files;
+}
+
 export async function appendToolCompletionAudit(
   deps: { events: Pick<ThreadEvents, "append"> },
   target: { spaceId: string; threadId: string; botId: string; runId: string },
   completion: AgentToolCompletion,
   secrets: string[] = [],
+  diffs?: ToolDiffRegistry,
 ): Promise<void> {
   const payload = toolCompletionAuditPayload(completion, secrets);
+  const diff = diffs?.get(completion.executionId);
+  if (diff) {
+    payload.diff = diff;
+    diffs?.delete(completion.executionId);
+  }
   try {
     await deps.events.append({
       spaceId: target.spaceId,
@@ -3773,6 +3958,14 @@ export function createRunExecutor(deps: ExecutorDeps) {
         const computer = await provisionComputer(deps, storedComputer.id, context, "bot");
         screenRelease = { computer, context };
         scheduleComputerSleep(deps.jobs, storedComputer.id);
+        // Populated by the file tools as they run; drained by the completion event.
+        const toolDiffs: ToolDiffRegistry = new Map();
+        // Carried between shell commands so a snapshot doubles as the next pre-state.
+        let previousWorkspaceSnapshot: Map<string, Uint8Array> | undefined;
+        // Outcomes seen while the run streamed. The final message is built from the
+        // in-memory segments, which the live reducers never touch, so they are settled
+        // from here before the message is written.
+        const toolOutcomes = new Map<string, ToolActivityStep>();
         const workspaceCheckpoint = createRunWorkspaceCheckpoint(() =>
           checkpointRunComputerWorkspace(deps, storedComputer, computer, context),
         );
@@ -3981,14 +4174,14 @@ export function createRunExecutor(deps: ExecutorDeps) {
         }
         // Tool calls that land mid-sentence wait here until the narration catches up to a
         // sentence boundary, so the step chips never render in the middle of a clause.
-        let pendingToolNames: string[] = [];
+        let pendingToolNames: ToolActivityStep[] = [];
         const flushPendingTools = () => {
           if (currentTextSegment) {
             messageSegments = appendTextSegment(messageSegments, currentTextSegment);
             currentTextSegment = "";
           }
-          for (const name of pendingToolNames) {
-            messageSegments = appendToolCallSegment(messageSegments, name);
+          for (const step of pendingToolNames) {
+            messageSegments = appendToolStepToSegments(messageSegments, step);
           }
           pendingToolNames = [];
         };
@@ -4832,13 +5025,15 @@ export function createRunExecutor(deps: ExecutorDeps) {
               }
             }
             const content = new TextEncoder().encode(textContentArg(args.content, ""));
+            const storedPath = resolveBotWorkspacePath(computerMode, bot.id, filePath);
+            // Read before overwriting so the action can show what it changed. A missing
+            // file is a creation, which is a diff from empty, not a failure.
+            const before = await deps.sandbox
+              .readFile(computer, storedPath, context, { maxBytes: ATTACHMENT_MAX_BYTES })
+              .catch(() => undefined);
             workspaceCheckpoint.markDirty();
             try {
-              await deps.sandbox.writeFile(
-                computer,
-                { path: resolveBotWorkspacePath(computerMode, bot.id, filePath), content },
-                context,
-              );
+              await deps.sandbox.writeFile(computer, { path: storedPath, content }, context);
             } catch (error) {
               await recordComputerAction("write_file", filePath, {
                 error: error instanceof Error ? error.message : "could not write file",
@@ -4846,6 +5041,9 @@ export function createRunExecutor(deps: ExecutorDeps) {
               throw error;
             }
             await recordComputerAction("write_file", filePath, { bytes: content.byteLength });
+            // The path is workspace-relative in the diff: a host path must never be shown.
+            const diff = buildToolDiff({ path: filePath, before, after: content });
+            if (diff) toolDiffs.set(executionId, diff);
             return finish({ ok: true, path: filePath });
           }
           if (name === "render_plot") {
@@ -5071,6 +5269,16 @@ export function createRunExecutor(deps: ExecutorDeps) {
               spaceEnvironment: agentEnvironment,
               registerRedactions: registerRunSecrets,
             });
+            // Only commands that can plausibly write pay for a snapshot.
+            const mayWrite = shellCommandMayWriteWorkspace(command);
+            const snapshotBefore = mayWrite
+              ? (previousWorkspaceSnapshot ??
+                (await captureWorkspaceSnapshot(deps, {
+                  computer,
+                  root: "",
+                  context,
+                })))
+              : undefined;
             workspaceCheckpoint.markDirty();
             const coderStartedAt = new Date().toISOString();
             let coder = coderRequest
@@ -5133,6 +5341,37 @@ export function createRunExecutor(deps: ExecutorDeps) {
                     (value) => redactSecrets(value, runSecrets),
                   );
                 return `${safe.stdout}${safe.stderr}`;
+              };
+              // Compare after the command, then keep the post-state as the next command's
+              // pre-state so consecutive shell edits do not each pay two walks.
+              const recordShellDiff = async () => {
+                if (!snapshotBefore) return;
+                const after = await captureWorkspaceSnapshot(deps, {
+                  computer,
+                  root: "",
+                  context,
+                });
+                if (!after) {
+                  previousWorkspaceSnapshot = undefined;
+                  return;
+                }
+                previousWorkspaceSnapshot = after;
+                const diffs = snapshotWorkspaceChanges(snapshotBefore, after);
+                if (diffs.length === 0) return;
+                // One action, one diff row: the first changed file carries the patch and
+                // the rest are noted, rather than inventing rows the timeline cannot place.
+                const [first, ...rest] = diffs;
+                if (!first) return;
+                toolDiffs.set(executionId, {
+                  ...first,
+                  ...(rest.length > 0
+                    ? {
+                        unavailableReason: `${rest.length} more file${rest.length === 1 ? "" : "s"} changed: ${rest
+                          .map((diff) => diff.path)
+                          .join(", ")}`,
+                      }
+                    : {}),
+                });
               };
               const observed = await observeShellCommand(
                 deps.sandbox.execute(
@@ -5210,6 +5449,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 exitCode: redacted.code,
                 output,
               });
+              await recordShellDiff();
               return finish(
                 coder
                   ? {
@@ -6807,8 +7047,28 @@ export function createRunExecutor(deps: ExecutorDeps) {
                     resolveConnectedModel(run, provider, modelId, (values) =>
                       runSecrets.push(...values),
                     ),
-              onToolCompleted: (completion) =>
-                appendToolCompletionAudit(
+              onToolCompleted: (completion) => {
+                // Recorded before the audit append, which drains the diff registry.
+                const diff = toolDiffs.get(completion.executionId);
+                toolOutcomes.set(completion.executionId, {
+                  label: humanizeToolName(completion.name),
+                  count: 1,
+                  status: toolCompletionStatus({
+                    name: completion.name,
+                    executionId: completion.executionId,
+                    outcome: completion.paused
+                      ? "paused"
+                      : completion.error === undefined
+                        ? "succeeded"
+                        : "error",
+                    ...(completion.error === undefined ? {} : { error: String(completion.error) }),
+                  }),
+                  ...(Number.isFinite(completion.durationMs)
+                    ? { durationMs: Math.max(0, Math.round(completion.durationMs)) }
+                    : {}),
+                  ...(diff ? { diff } : {}),
+                });
+                return appendToolCompletionAudit(
                   deps,
                   {
                     spaceId: run.spaceId,
@@ -6818,7 +7078,9 @@ export function createRunExecutor(deps: ExecutorDeps) {
                   },
                   completion,
                   runSecrets,
-                ),
+                  toolDiffs,
+                );
+              },
               claimSteering: scripted
                 ? undefined
                 : async (seenIds) => {
@@ -7055,9 +7317,31 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 botId: bot.id,
                 type: "agent.tool.called",
                 runId,
-                payload: { name: event.name, executionId: event.executionId },
+                payload: {
+                  name: event.name,
+                  executionId: event.executionId,
+                  tool: event.name,
+                  label: humanizeToolName(event.name),
+                  // Built from selected safe fields, never the raw arguments.
+                  summary: redactActivityText(
+                    toolActivitySummary(event.name, event.args),
+                    runSecrets,
+                  ),
+                  startedAt: new Date().toISOString(),
+                },
               });
-              pendingToolNames.push(event.name);
+              pendingToolNames.push({
+                id: event.executionId,
+                label: humanizeToolName(event.name),
+                count: 1,
+                tool: event.name,
+                summary: redactActivityText(
+                  toolActivitySummary(event.name, event.args),
+                  runSecrets,
+                ),
+                status: "running",
+                startedAt: new Date().toISOString(),
+              });
               tryFlushPendingTools();
               const loopGuard = advanceToolCallLoopGuard(toolCallStreak, event.name, event.args);
               toolCallStreak = loopGuard.streak;
@@ -7266,6 +7550,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
           terminalCheckpointComplete = true;
 
           flushPendingTools();
+          messageSegments = settleMessageSteps(messageSegments, toolOutcomes);
           // Only routine runs are instructed to emit NO_RESPONSE. Other
           // allowSilentEmpty wakes (FYI, messaging) may finish truly empty.
           const silentReply = runAllowsSilentEmpty(run.trigger)

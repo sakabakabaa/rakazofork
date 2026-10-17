@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
   appendTextSegment,
+  appendToolActivityStep,
   appendToolCallSegment,
   appendToolStep,
+  applyToolCompletion,
+  applyToolCompletionToBlocks,
   containsSecret,
   createStreamingRedactor,
   endsSentence,
@@ -16,6 +19,7 @@ import {
   sanitizeJsonValue,
   sanitizeUtf16ForJson,
   stripLiveStreamingProgress,
+  toolStepFromCall,
   trackToolCallStreak,
   trackToolNameStreak,
   withLiveStreamingProgress,
@@ -598,6 +602,335 @@ describe("appendToolStep", () => {
     expect(appendToolStep(first, "SLACK_FETCH_CONVERSATION_HISTORY")).toEqual([
       { label: "Slack find channels", count: 1 },
       { label: "Slack fetch conversation history", count: 1 },
+    ]);
+  });
+});
+
+describe("tool activity steps", () => {
+  it("builds a running step from a call that carries an execution id", () => {
+    expect(
+      toolStepFromCall({
+        name: "shell",
+        executionId: "exec-1",
+        label: "Run tests",
+        summary: "pnpm test",
+        startedAt: "2026-01-01T00:00:00.000Z",
+      }),
+    ).toEqual({
+      id: "exec-1",
+      label: "Run tests",
+      count: 1,
+      tool: "shell",
+      summary: "pnpm test",
+      status: "running",
+      startedAt: "2026-01-01T00:00:00.000Z",
+    });
+  });
+
+  it("keeps the legacy shape for a name-only call", () => {
+    expect(toolStepFromCall({ name: "SLACK_FIND_CHANNELS" })).toBeNull();
+  });
+
+  it("never merges id-bearing rows into one count", () => {
+    const first = appendToolActivityStep([], { id: "exec-1", label: "Shell", count: 1 });
+    const next = appendToolActivityStep(first, { id: "exec-2", label: "Shell", count: 1 });
+    expect(next).toEqual([
+      { id: "exec-1", label: "Shell", count: 1 },
+      { id: "exec-2", label: "Shell", count: 1 },
+    ]);
+  });
+
+  it("does not add a second row for a re-delivered start", () => {
+    const steps = appendToolActivityStep([], { id: "exec-1", label: "Shell", count: 1 });
+    expect(appendToolActivityStep(steps, { id: "exec-1", label: "Shell", count: 1 })).toEqual(
+      steps,
+    );
+  });
+
+  it("still merges consecutive legacy steps by label", () => {
+    const steps = appendToolActivityStep([], { label: "Shell", count: 1 });
+    expect(appendToolActivityStep(steps, { label: "Shell", count: 1 })).toEqual([
+      { label: "Shell", count: 2 },
+    ]);
+  });
+
+  it("settles the matching row in place and keeps its start data", () => {
+    const steps = [
+      {
+        id: "exec-1",
+        label: "Run tests",
+        count: 1,
+        summary: "pnpm test",
+        startedAt: "2026-01-01T00:00:00.000Z",
+        status: "running" as const,
+      },
+    ];
+    expect(
+      applyToolCompletion(steps, { name: "shell", executionId: "exec-1", durationMs: 1234.6 }),
+    ).toEqual([
+      {
+        id: "exec-1",
+        label: "Run tests",
+        count: 1,
+        summary: "pnpm test",
+        startedAt: "2026-01-01T00:00:00.000Z",
+        status: "succeeded",
+        durationMs: 1235,
+      },
+    ]);
+  });
+
+  it("maps the legacy outcome field onto the activity status", () => {
+    const step = { id: "exec-1", label: "Shell", count: 1 };
+    expect(applyToolCompletion([step], { name: "shell", executionId: "exec-1", outcome: "error" }))
+      .toEqual([{ ...step, status: "failed" }]);
+    expect(
+      applyToolCompletion([step], { name: "shell", executionId: "exec-1", outcome: "paused" }),
+    ).toEqual([{ ...step, status: "paused" }]);
+    expect(
+      applyToolCompletion([step], { name: "shell", executionId: "exec-1", outcome: "succeeded" }),
+    ).toEqual([{ ...step, status: "succeeded" }]);
+  });
+
+  it("prefers an explicit status over the outcome", () => {
+    expect(
+      applyToolCompletion([{ id: "exec-1", label: "Shell", count: 1 }], {
+        name: "shell",
+        executionId: "exec-1",
+        status: "failed",
+        outcome: "succeeded",
+        error: "exit code 1",
+      }),
+    ).toEqual([{ id: "exec-1", label: "Shell", count: 1, status: "failed", error: "exit code 1" }]);
+  });
+
+  it("ignores a completion whose id matches nothing", () => {
+    const steps = [{ id: "exec-1", label: "Shell", count: 1, status: "running" as const }];
+    expect(applyToolCompletion(steps, { name: "other", executionId: "exec-9" })).toBeNull();
+  });
+
+  it("falls back to the newest unsettled row with the same label", () => {
+    const steps = [
+      { label: "Shell", count: 2, status: "succeeded" as const },
+      { label: "Shell", count: 1 },
+      { label: "Read file", count: 1 },
+    ];
+    expect(applyToolCompletion(steps, { name: "shell", durationMs: 10 })).toEqual([
+      { label: "Shell", count: 2, status: "succeeded" },
+      { label: "Shell", count: 1, status: "succeeded", durationMs: 10 },
+      { label: "Read file", count: 1 },
+    ]);
+  });
+
+  it("reports no change when a block has no step to settle", () => {
+    expect(
+      applyToolCompletionToBlocks([{ kind: "text", text: "done" }], {
+        name: "shell",
+        executionId: "exec-1",
+      }),
+    ).toBeNull();
+  });
+});
+
+describe("projectMessages tool activity", () => {
+  it("settles the started row in place when its completion arrives", () => {
+    const messages = projectMessages([
+      {
+        id: "e1",
+        threadId: "t1",
+        seq: 0,
+        type: "agent.tool.called",
+        runId: "r1",
+        payload: {
+          name: "shell",
+          executionId: "exec-1",
+          label: "Run tests",
+          startedAt: "2026-01-01T00:00:00.000Z",
+        },
+        createdAt: "2026-01-01T00:00:00.000Z",
+      },
+      {
+        id: "e2",
+        threadId: "t1",
+        seq: 1,
+        type: "agent.tool.completed",
+        runId: "r1",
+        payload: { name: "shell", executionId: "exec-1", status: "succeeded", durationMs: 1500 },
+        createdAt: "2026-01-01T00:00:01.500Z",
+      },
+    ]);
+
+    expect(messages).toHaveLength(1);
+    expect(messages[0]?.blocks).toEqual([
+      {
+        kind: "steps",
+        steps: [
+          {
+            id: "exec-1",
+            label: "Run tests",
+            count: 1,
+            tool: "shell",
+            status: "succeeded",
+            startedAt: "2026-01-01T00:00:00.000Z",
+            durationMs: 1500,
+          },
+        ],
+      },
+    ]);
+  });
+
+  it("marks a failed completion and carries its error", () => {
+    const messages = projectMessages([
+      {
+        id: "e1",
+        threadId: "t1",
+        seq: 0,
+        type: "agent.tool.called",
+        runId: "r1",
+        payload: { name: "shell", executionId: "exec-1" },
+        createdAt: "2026-01-01T00:00:00.000Z",
+      },
+      {
+        id: "e2",
+        threadId: "t1",
+        seq: 1,
+        type: "agent.tool.completed",
+        runId: "r1",
+        payload: { name: "shell", executionId: "exec-1", outcome: "error", error: "exit code 1" },
+        createdAt: "2026-01-01T00:00:01.000Z",
+      },
+    ]);
+
+    expect(messages[0]?.blocks).toEqual([
+      {
+        kind: "steps",
+        steps: [
+          {
+            id: "exec-1",
+            label: "Shell",
+            count: 1,
+            tool: "shell",
+            status: "failed",
+            error: "exit code 1",
+          },
+        ],
+      },
+    ]);
+  });
+
+  it("keeps two consecutive calls as separate chronological rows", () => {
+    const messages = projectMessages([
+      {
+        id: "e1",
+        threadId: "t1",
+        seq: 0,
+        type: "agent.tool.called",
+        runId: "r1",
+        payload: { name: "shell", executionId: "exec-1" },
+        createdAt: "2026-01-01T00:00:00.000Z",
+      },
+      {
+        id: "e2",
+        threadId: "t1",
+        seq: 1,
+        type: "agent.tool.called",
+        runId: "r1",
+        payload: { name: "shell", executionId: "exec-2" },
+        createdAt: "2026-01-01T00:00:01.000Z",
+      },
+    ]);
+
+    expect(messages[0]?.blocks).toEqual([
+      {
+        kind: "steps",
+        steps: [
+          { id: "exec-1", label: "Shell", count: 1, tool: "shell", status: "running" },
+          { id: "exec-2", label: "Shell", count: 1, tool: "shell", status: "running" },
+        ],
+      },
+    ]);
+  });
+
+  it("does not invent a row for a completion whose start was never projected", () => {
+    const messages = projectMessages([
+      {
+        id: "e1",
+        threadId: "t1",
+        seq: 0,
+        type: "agent.tool.completed",
+        runId: "r1",
+        payload: { name: "shell", executionId: "exec-1", status: "succeeded" },
+        createdAt: "2026-01-01T00:00:00.000Z",
+      },
+    ]);
+
+    expect(messages).toEqual([]);
+  });
+
+  it("settles a step stored on a durable message", () => {
+    const messages = projectMessages([
+      {
+        id: "e1",
+        threadId: "t1",
+        seq: 0,
+        type: "thread.message.created",
+        runId: "r1",
+        payload: {
+          messageId: "m1",
+          role: "bot",
+          blocks: [{ kind: "steps", steps: [{ label: "Shell", count: 1 }] }],
+        },
+        createdAt: "2026-01-01T00:00:00.000Z",
+      },
+      {
+        id: "e2",
+        threadId: "t1",
+        seq: 1,
+        type: "agent.tool.completed",
+        runId: "r1",
+        payload: { name: "shell", executionId: "exec-1", status: "failed", error: "boom" },
+        createdAt: "2026-01-01T00:00:01.000Z",
+      },
+    ]);
+
+    expect(messages[0]?.blocks).toEqual([
+      { kind: "steps", steps: [{ label: "Shell", count: 1, status: "failed", error: "boom" }] },
+    ]);
+  });
+
+  it("settles a step the run ended without completing", () => {
+    const messages = projectMessages([
+      {
+        id: "e1",
+        threadId: "t1",
+        seq: 0,
+        type: "thread.message.created",
+        runId: "r1",
+        payload: {
+          messageId: "m1",
+          role: "bot",
+          blocks: [
+            {
+              kind: "steps",
+              steps: [{ id: "exec-1", label: "Shell", count: 1, status: "running" }],
+            },
+          ],
+        },
+        createdAt: "2026-01-01T00:00:00.000Z",
+      },
+      {
+        id: "e2",
+        threadId: "t1",
+        seq: 1,
+        type: "run.cancelled",
+        runId: "r1",
+        payload: {},
+        createdAt: "2026-01-01T00:00:01.000Z",
+      },
+    ]);
+
+    expect(messages[0]?.blocks).toEqual([
+      { kind: "steps", steps: [{ id: "exec-1", label: "Shell", count: 1, status: "interrupted" }] },
     ]);
   });
 });

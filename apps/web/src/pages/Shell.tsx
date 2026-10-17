@@ -150,7 +150,6 @@ import {
 import { ComputerUpdateProgress } from "../components/ComputerUpdateProgress";
 import { CallCard } from "../components/call/CallCard";
 import { VoiceChatCard } from "../components/call/VoiceChatCard";
-import { ComputerWorkspace } from "../components/computer/ComputerWorkspace";
 import { ErrorBoundary, lazyOverlay, SectionLoadFailed } from "../components/ErrorBoundary";
 import { GoalProgressCard } from "../components/GoalProgressCard";
 import { LongReplyMarkdown } from "../components/LongReplyMarkdown";
@@ -4780,19 +4779,9 @@ export function ShellPage() {
               </div>
             ) : null}
             <div className="relative min-h-0 flex-1 bg-background">
-              <ComputerWorkspace
-                botId={computerBot.id}
-                computer={computer}
-                hasControl={hasControl}
-                dock={!recordingSkill}
-                onTakeControl={
-                  computer?.state === "running" &&
-                  !hasControl &&
-                  !computerTakeoverBlocked(computer, snapshot?.run?.status)
-                    ? () => openComputer(computerBot.id)
-                    : undefined
-                }
-              >
+              {/* The screen fills the overlay on its own: the terminal and file browser
+                  moved to the side-panel rail, so there is no dock to host here. */}
+              <div className="relative h-full min-h-0 overflow-hidden">
                 {computer?.kind === "desktop" ? (
                   <DesktopKindEmptyState className="grid h-full place-items-center px-8 text-center text-sm text-muted-foreground/80" />
                 ) : computer?.state === "running" && embeddedScreenUrl && !computerScreenError ? (
@@ -4825,7 +4814,7 @@ export function ShellPage() {
                         : computerLabel(computer?.mode, computerBot.name))}
                   </div>
                 )}
-              </ComputerWorkspace>
+              </div>
             </div>
           </div>
         </div>
@@ -6748,6 +6737,7 @@ const MessageView = memo(function MessageView({
                     live={isLive}
                     latestAction={action ?? visibleToolSteps.at(-1)?.label}
                     durationMs={toolDurationMs || undefined}
+                    steps={visibleToolSteps}
                   >
                     <ToolSteps
                       steps={visibleToolSteps}
