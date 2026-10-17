@@ -3,6 +3,7 @@ import type { AgentSkill, AgentSkillCatalogEntry, MemoryDocument } from "@rakazo
 import {
   Badge,
   Button,
+  Input,
   Skeleton,
   Tabs,
   TabsContent,
@@ -91,6 +92,8 @@ function MemoryDocumentList({
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [query, setQuery] = useState("");
+  const [hits, setHits] = useState<Array<{ path: string; snippet: string }> | null>(null);
   const generation = useRef(0);
   const loadRef = useRef(load);
   loadRef.current = load;
@@ -136,6 +139,55 @@ function MemoryDocumentList({
     }
   }
 
+  async function setPinned(doc: MemoryDocument, pinned: boolean) {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const updated = await rpc.memory.setPinned({ documentId: doc.id, pinned });
+      setDocs((current) => current.map((entry) => (entry.id === updated.id ? updated : entry)));
+    } catch {
+      setError(t`Could not update`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function forget(doc: MemoryDocument) {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await rpc.memory.forget({ documentId: doc.id });
+      // A forgotten document stops being retrieved; drop it from the list rather
+      // than showing a row the agent can no longer see.
+      setDocs((current) => current.filter((entry) => entry.id !== doc.id));
+      if (openId === doc.id) setOpenId(null);
+    } catch {
+      setError(t`Could not delete`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function search() {
+    const trimmed = query.trim();
+    if (busy || !trimmed) {
+      setHits(null);
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const results = await rpc.memory.search({ query: trimmed });
+      setHits(results.map((hit) => ({ path: hit.path, snippet: hit.snippet })));
+    } catch {
+      setError(t`Could not search`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function exportMarkdown() {
     if (busy) return;
     setBusy(true);
@@ -157,6 +209,58 @@ function MemoryDocumentList({
 
   return (
     <div data-testid={testId}>
+      <div className="flex gap-2 px-2.5 pb-2">
+        <Input
+          value={query}
+          onChange={(event) => {
+            setQuery(event.target.value);
+            if (!event.target.value.trim()) setHits(null);
+          }}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") void search();
+          }}
+          placeholder={t`Search memory`}
+          aria-label={t`Search memory`}
+          className="h-8 flex-1 text-[13px]"
+        />
+        <Button
+          variant="ghost"
+          type="button"
+          disabled={busy || !query.trim()}
+          onClick={() => void search()}
+          className="rounded-lg bg-muted px-3 py-1.5 text-[13px] text-foreground disabled:opacity-50"
+        >
+          <Trans>Search</Trans>
+        </Button>
+      </div>
+      {hits ? (
+        <div className="px-2.5 pb-2" data-testid={`${testId}-results`}>
+          {hits.length === 0 ? (
+            <div className="py-1 text-[13px] text-muted-foreground">
+              <Trans>No matches</Trans>
+            </div>
+          ) : (
+            hits.map((hit) => (
+              <button
+                key={hit.path}
+                type="button"
+                onClick={() => {
+                  const match = docs.find((entry) => entry.path === hit.path);
+                  if (match) openDoc(match);
+                }}
+                className="block w-full rounded-lg px-2 py-1.5 text-start hover:bg-muted"
+              >
+                <span className="block truncate text-[13px] text-foreground" dir="auto">
+                  {hit.path}
+                </span>
+                <span className="block truncate text-[12px] text-muted-foreground" dir="auto">
+                  {hit.snippet}
+                </span>
+              </button>
+            ))
+          )}
+        </div>
+      ) : null}
       {error ? <div className="px-2.5 pb-2 text-[13px] text-destructive">{error}</div> : null}
       {loading ? <Skeleton className="h-10 w-full" /> : null}
       {!loading && docs.length === 0 && !error ? (
@@ -175,7 +279,8 @@ function MemoryDocumentList({
           >
             <span className="flex w-full items-baseline justify-between gap-3">
               <span className="min-w-0 truncate text-[14px] text-foreground" dir="auto">
-                {doc.path}
+                {doc.pinned ? <span aria-hidden="true">{"\u2605 "}</span> : null}
+                {doc.title?.trim() || doc.path}
               </span>
               <span className="shrink-0 text-[12px] text-muted-foreground">
                 <Trans>rev {doc.revision}</Trans>
@@ -211,6 +316,24 @@ function MemoryDocumentList({
                   className="rounded-lg px-3 py-1.5 text-[13px] text-muted-foreground"
                 >
                   <Trans>Cancel</Trans>
+                </Button>
+                <Button
+                  variant="ghost"
+                  type="button"
+                  disabled={busy}
+                  onClick={() => void setPinned(doc, !doc.pinned)}
+                  className="rounded-lg px-3 py-1.5 text-[13px] text-muted-foreground hover:text-foreground"
+                >
+                  {doc.pinned ? <Trans>Unpin</Trans> : <Trans>Pin</Trans>}
+                </Button>
+                <Button
+                  variant="ghost"
+                  type="button"
+                  disabled={busy}
+                  onClick={() => void forget(doc)}
+                  className="ms-auto rounded-lg px-3 py-1.5 text-[13px] text-destructive"
+                >
+                  <Trans>Delete</Trans>
                 </Button>
               </div>
             </div>

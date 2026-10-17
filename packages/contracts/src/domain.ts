@@ -618,6 +618,13 @@ export const MemoryDocumentSchema = z.object({
   content: z.string(),
   revision: z.number().int(),
   updatedAt: z.string(),
+  /** Stable identity that survives a rename or move. */
+  noteId: z.string().optional(),
+  kind: z.string().optional(),
+  title: z.string().optional(),
+  tags: z.array(z.string()).optional(),
+  /** Pinned documents are offered to the prompt ahead of ranking. */
+  pinned: z.boolean().optional(),
 });
 export type MemoryDocument = z.infer<typeof MemoryDocumentSchema>;
 
