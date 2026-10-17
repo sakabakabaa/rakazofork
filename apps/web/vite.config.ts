@@ -401,6 +401,13 @@ export default defineConfig(({ mode }) => {
   const rootEnv = loadEnv(mode, path.resolve(import.meta.dirname, "../.."), "");
   const api = process.env.API_PROXY_TARGET ?? rootEnv.API_PROXY_TARGET ?? "http://127.0.0.1:3100";
   const previewHost = process.env.RAKAZO_HOST ?? rootEnv.RAKAZO_HOST ?? "localhost";
+  // Hosts a tunnelled dev server is reached under, comma separated (leading-dot
+  // wildcards allowed, e.g. ".trycloudflare.com"). Unset keeps Vite's own check,
+  // which guards a local dev server against DNS rebinding — so this stays opt-in
+  // rather than defaulting to allowing every Host header.
+  const devAllowedHosts = process.env.RAKAZO_DEV_ALLOWED_HOSTS?.split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean);
   const screenProxySecret = () =>
     resolveScreenProxySecret({
       ...process.env,
@@ -449,6 +456,7 @@ export default defineConfig(({ mode }) => {
       host: "127.0.0.1",
       port: webPort,
       strictPort: true,
+      allowedHosts: devAllowedHosts,
       proxy: {
         "/api": { target: api, changeOrigin: true },
         "/rpc": { target: api, changeOrigin: true },
