@@ -3192,6 +3192,7 @@ export function createRouter(deps: RouterDeps) {
           where: {
             spaceId: context.actor.spaceId,
             userId: context.actor.userId,
+            deletedAt: null,
             ...(input.botId ? { botId: input.botId } : {}),
             ...(input.scope ? { scope: input.scope } : {}),
           },
@@ -3204,6 +3205,11 @@ export function createRouter(deps: RouterDeps) {
           content: doc.content,
           revision: doc.revision,
           updatedAt: doc.updatedAt.toISOString(),
+          ...(doc.noteId ? { noteId: doc.noteId } : {}),
+          ...(doc.kind ? { kind: doc.kind } : {}),
+          ...(doc.title ? { title: doc.title } : {}),
+          ...(doc.tags.length > 0 ? { tags: doc.tags } : {}),
+          pinned: doc.pinned,
         }));
       }),
       update: authed.memory.update.handler(async ({ context, input }) => {
@@ -3212,6 +3218,7 @@ export function createRouter(deps: RouterDeps) {
             id: input.documentId,
             spaceId: context.actor.spaceId,
             userId: context.actor.userId,
+            deletedAt: null,
           },
         });
         if (!doc) throw new IsolationError();
@@ -3221,6 +3228,9 @@ export function createRouter(deps: RouterDeps) {
             botId: doc.botId ?? undefined,
             path: doc.path,
             content: input.content,
+            pinned: doc.pinned,
+            ...(doc.title ? { title: doc.title } : {}),
+            ...(doc.kind ? { kind: doc.kind } : {}),
           },
           {
             operationId: "mem",
@@ -3238,13 +3248,95 @@ export function createRouter(deps: RouterDeps) {
           content: updated.content,
           revision: updated.revision,
           updatedAt: new Date().toISOString(),
+          ...(doc.noteId ? { noteId: doc.noteId } : {}),
+          ...(doc.kind ? { kind: doc.kind } : {}),
+          ...(doc.title ? { title: doc.title } : {}),
+          ...(doc.tags.length > 0 ? { tags: doc.tags } : {}),
+          pinned: doc.pinned,
         };
+      }),
+      forget: authed.memory.forget.handler(async ({ context, input }) => {
+        const doc = await deps.prisma.memoryDocument.findFirst({
+          where: {
+            id: input.documentId,
+            spaceId: context.actor.spaceId,
+            userId: context.actor.userId,
+            deletedAt: null,
+          },
+        });
+        if (!doc) throw new IsolationError();
+        const result = await deps.memory.forget?.(
+          {
+            scope: doc.scope as "bot" | "user",
+            botId: doc.botId ?? undefined,
+            path: doc.path,
+          },
+          {
+            operationId: "mem-forget",
+            traceId: "mem-forget",
+            spaceId: context.actor.spaceId,
+            userId: context.actor.userId,
+            signal: new AbortController().signal,
+          },
+        );
+        return { ok: true as const, forgotten: result?.forgotten ?? false };
+      }),
+      setPinned: authed.memory.setPinned.handler(async ({ context, input }) => {
+        const doc = await deps.prisma.memoryDocument.findFirst({
+          where: {
+            id: input.documentId,
+            spaceId: context.actor.spaceId,
+            userId: context.actor.userId,
+            deletedAt: null,
+          },
+        });
+        if (!doc) throw new IsolationError();
+        const updated = await deps.prisma.memoryDocument.update({
+          where: { id: doc.id },
+          data: { pinned: input.pinned },
+        });
+        return {
+          id: updated.id,
+          scope: updated.scope as "bot" | "user",
+          botId: updated.botId,
+          path: updated.path,
+          content: updated.content,
+          revision: updated.revision,
+          updatedAt: updated.updatedAt.toISOString(),
+          ...(updated.noteId ? { noteId: updated.noteId } : {}),
+          ...(updated.kind ? { kind: updated.kind } : {}),
+          ...(updated.title ? { title: updated.title } : {}),
+          ...(updated.tags.length > 0 ? { tags: updated.tags } : {}),
+          pinned: updated.pinned,
+        };
+      }),
+      search: authed.memory.search.handler(async ({ context, input }) => {
+        const results = await deps.memory.search(
+          {
+            query: input.query,
+            scope: input.scope ?? "all",
+            ...(input.botId ? { botId: input.botId } : {}),
+          },
+          {
+            operationId: "mem-search",
+            traceId: "mem-search",
+            spaceId: context.actor.spaceId,
+            userId: context.actor.userId,
+            signal: new AbortController().signal,
+          },
+        );
+        return results.map((hit) => ({
+          path: hit.path,
+          snippet: hit.snippet,
+          score: hit.score,
+        }));
       }),
       exportMarkdown: authed.memory.exportMarkdown.handler(async ({ context, input }) => {
         const docs = await deps.prisma.memoryDocument.findMany({
           where: {
             spaceId: context.actor.spaceId,
             userId: context.actor.userId,
+            deletedAt: null,
             ...(input.botId ? { botId: input.botId } : {}),
           },
         });

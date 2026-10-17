@@ -475,6 +475,29 @@ export const appContract = {
     update: oc
       .input(z.object({ documentId: Id, content: z.string() }))
       .output(MemoryDocumentSchema),
+    /**
+     * Soft-delete a memory: it stops being retrieved, and its revisions are kept so
+     * forgetting stays distinct from losing the history that explains it.
+     */
+    forget: oc
+      .input(z.object({ documentId: Id }))
+      .output(z.object({ ok: z.literal(true), forgotten: z.boolean() })),
+    /** Pin a document so it is offered to the prompt ahead of ranked results. */
+    setPinned: oc
+      .input(z.object({ documentId: Id, pinned: z.boolean() }))
+      .output(MemoryDocumentSchema),
+    /** Ranked full-text search over this user's live memory. */
+    search: oc
+      .input(
+        z.object({
+          query: z.string().min(1).max(200),
+          botId: Id.optional(),
+          scope: z.enum(["bot", "user"]).optional(),
+        }),
+      )
+      .output(
+        z.array(z.object({ path: z.string(), snippet: z.string(), score: z.number() })),
+      ),
     exportMarkdown: oc.input(z.object({ botId: Id.optional() })).output(z.string()),
     providerConfig: oc.output(SpaceMemoryConfigSchema.nullable()),
     connectProvider: oc

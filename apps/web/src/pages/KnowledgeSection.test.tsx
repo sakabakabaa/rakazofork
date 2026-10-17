@@ -22,6 +22,7 @@ vi.mock("@rakazo/ui-web", () => {
       <button {...props} />
     ),
     Textarea: (props: ComponentProps<"textarea">) => <textarea {...props} />,
+    Input: (props: ComponentProps<"input">) => <input {...props} />,
     Skeleton: Container,
     Tabs: Container,
     TabsList: Container,

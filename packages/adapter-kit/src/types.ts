@@ -269,17 +269,54 @@ export interface MemoryReadRequest {
   scope: "bot" | "user";
   botId?: string;
   path?: string;
+  /** Include soft-deleted documents. Off by default: a forgotten note is not context. */
+  includeDeleted?: boolean;
+}
+
+/** Retrieval metadata carried alongside a document's content. */
+export interface MemoryDocumentMeta {
+  /** Stable identity that survives a rename or move. */
+  noteId?: string;
+  kind?: string;
+  title?: string;
+  tags?: string[];
+  /** Last time the content was confirmed accurate, as opposed to merely edited. */
+  verifiedAt?: string;
+  /** Pinned documents are offered to the prompt ahead of ranking. */
+  pinned?: boolean;
+  contentHash?: string;
 }
 
 export interface MemorySnapshot {
-  documents: Array<{
-    id: string;
-    path: string;
-    content: string;
-    revision: number;
-    updatedAt?: string;
-  }>;
+  documents: Array<
+    {
+      id: string;
+      path: string;
+      content: string;
+      revision: number;
+      updatedAt?: string;
+    } & MemoryDocumentMeta
+  >;
 }
+
+/**
+ * Rank the live documents that belong to one bot: its own bot-scope documents plus
+ * the user-scope documents every bot in the space shares. This is deliberately not
+ * `search`, whose `scope: "all"` applies `botId` as a filter and would therefore
+ * exclude the shared documents.
+ */
+export interface MemoryRankRequest {
+  /** The text to rank against, normally the current turn's prompt. */
+  query: string;
+  botId: string;
+  limit?: number;
+}
+
+export type MemoryRankedDocument = MemorySnapshot["documents"][number] & {
+  scope: "bot" | "user";
+  /** Full-text rank, or 0 when the query did not match this document. */
+  score: number;
+};
 
 export interface MemorySearchRequest {
   query: string;
@@ -306,6 +343,27 @@ export interface MemoryCommitRequest {
   expectedRevision?: number;
   sourceRunId?: string;
   sourceThreadId?: string;
+  /** Retrieval metadata. Omitted fields keep their stored value on update. */
+  noteId?: string;
+  kind?: string;
+  title?: string;
+  tags?: string[];
+  pinned?: boolean;
+  verifiedAt?: string;
+}
+
+export interface MemoryForgetRequest {
+  scope: "bot" | "user";
+  botId?: string;
+  path: string;
+}
+
+export interface MemoryForgetResult {
+  path: string;
+  /** False when there was no live document to forget. */
+  forgotten: boolean;
+  /** When the document was marked deleted. */
+  deletedAt?: string;
 }
 
 export interface MemoryRevision {
