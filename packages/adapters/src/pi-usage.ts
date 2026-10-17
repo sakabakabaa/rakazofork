@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { fetchPairedWithDispatcher } from "./undici-fetch.js";
 import type {
   Api,
   AssistantMessage,
@@ -101,8 +102,9 @@ export function usageReportingFetch(
   fetcher: typeof fetch,
   reported: ReportedUsageFields,
 ): typeof fetch {
+  const transport = fetchPairedWithDispatcher(fetcher);
   return async (input, init) => {
-    const response = await fetcher(input, init);
+    const response = await transport(input, init);
     if (!response.body || !response.headers.get("content-type")?.includes("text/event-stream"))
       return response;
     let buffer = "";

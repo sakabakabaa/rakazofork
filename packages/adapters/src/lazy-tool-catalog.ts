@@ -7,7 +7,8 @@ import type {
 import { z } from "zod";
 
 export const DIRECT_TOOL_LIMIT = 20;
-export const TOOL_SEARCH_LIMIT = 10;
+export const TOOL_SEARCH_DEFAULT_LIMIT = 4;
+export const TOOL_SEARCH_LIMIT = 8;
 export const SELECTED_SCHEMA_MAX_BYTES = 100_000;
 export const NAME_INDEX_MAX_NAMES = 200;
 export const NAME_INDEX_MAX_BYTES = 2_048;
@@ -16,6 +17,7 @@ const MAX_GROUP_LENGTH = 200;
 const MAX_TOOL_NAME_LENGTH = 200;
 const MAX_TOOL_ID_LENGTH = 500;
 export const MAX_DESCRIPTION_LENGTH = 500;
+export const MAX_SEARCH_DESCRIPTION_LENGTH = 180;
 export const CATALOG_SEARCH = "__catalog_search";
 export const CATALOG_LOAD = "__catalog_load";
 export const CATALOG_EXECUTE = "__catalog_execute";
@@ -30,7 +32,7 @@ export type CatalogSearchHit = {
 };
 
 export type CatalogSearchResult =
-  | { tools: CatalogSearchHit[]; hint?: string }
+  | { tools: CatalogSearchHit[]; hint?: string; total?: number; hasMore?: boolean }
   | { index: Array<{ group: string; names: string[] }> }
   | { groups: Array<{ group: string; count: number }>; hint: string }
   | { group: string; names: string[]; error?: string }
@@ -54,8 +56,8 @@ export function lazyCatalogTools(
   const indexText = formatNameIndexText(groupedNames(entries));
   const embedIndex = indexText.length > 0 && fitsNameIndexBudget(groupedNames(entries));
   const searchDescription = embedIndex
-    ? `Search connected ${label} tools by the user's goal, provider, or action name. Matching uses words, not only exact phrases. Empty query lists names by source. Pass group to expand one source. If a match is a discovery/search tool, use it to find actions nested behind that provider. A search with no matches does not mean a source is disconnected.\n${indexText}`
-    : `Search connected ${label} tools by the user's goal, provider, or action name. Matching uses words, not only exact phrases. Empty query lists sources. Pass group to list names in one source, or query to search. If a match is a discovery/search tool, use it to find actions nested behind that provider. A search with no matches does not mean a source is disconnected.`;
+    ? `Search connected ${label} tools by the user's goal, provider, or action name. Matching uses words, not only exact phrases. Keep multi-action searches narrow (for example, search Gmail profile and labels separately). Empty query lists names by source. Pass group to expand one source. If more matches exist, narrow the action query. If a match is a discovery/search tool, use it to find actions nested behind that provider. A search with no matches does not mean a source is disconnected.\n${indexText}`
+    : `Search connected ${label} tools by the user's goal, provider, or action name. Matching uses words, not only exact phrases. Keep multi-action searches narrow (for example, search Gmail profile and labels separately). Empty query lists sources. Pass group to list names in one source, or query to search. If more matches exist, narrow the action query. If a match is a discovery/search tool, use it to find actions nested behind that provider. A search with no matches does not mean a source is disconnected.`;
   return [
     {
       name: `${prefix}_search_tools`,
@@ -67,7 +69,7 @@ export function lazyCatalogTools(
             type: "string",
             maxLength: MAX_QUERY_LENGTH,
             description:
-              "Provider, action, or capability words. Search is token-based; try a broader term if no result appears. Omit to list names by source.",
+              "Provider and one action at a time (for example, Gmail profile, then Gmail labels). Search is token-based; try a broader term if no result appears. Omit to list names by source.",
           },
           group: {
             type: "string",
@@ -192,7 +194,7 @@ export function searchCatalog(
     return { index: grouped };
   }
 
-  const requested = Number(args.limit ?? TOOL_SEARCH_LIMIT);
+  const requested = Number(args.limit ?? TOOL_SEARCH_DEFAULT_LIMIT);
   const limit = Number.isFinite(requested)
     ? Math.max(1, Math.min(TOOL_SEARCH_LIMIT, Math.trunc(requested)))
     : TOOL_SEARCH_LIMIT;
@@ -201,28 +203,36 @@ export function searchCatalog(
     const shortName = catalogShortName({ id: catalogEntryId(tool), tool, group }).toLowerCase();
     return name === query || shortName === query;
   });
-  const matchedEntries = exactMatches.length > 0
-    ? exactMatches.map((entry) => ({ entry, score: 0 }))
-    : scoped
-    .map((entry) => ({ entry, score: catalogScore(entry, query) }))
-    .filter(({ score }) => score < 5)
-    .sort(
-      (left, right) =>
-        left.score - right.score ||
-        left.entry.tool.name.localeCompare(right.entry.tool.name) ||
-        left.entry.id.localeCompare(right.entry.id),
-    );
-  const matched = matchedEntries
-    .slice(0, limit)
-    .map(({ entry }) => ({
-      id: entry.id,
-      name: entry.tool.name,
-      description: entry.tool.description.slice(0, MAX_DESCRIPTION_LENGTH),
-      readOnly: entry.tool.readOnly === true,
-    }));
-  return matched.length > 0
-    ? { tools: matched }
-    : { tools: [], hint: EMPTY_SEARCH_HINT };
+  const matchedEntries =
+    exactMatches.length > 0
+      ? exactMatches.map((entry) => ({ entry, score: 0 }))
+      : scoped
+          .map((entry) => ({ entry, score: catalogScore(entry, query) }))
+          .filter(({ score }) => score < 5)
+          .sort(
+            (left, right) =>
+              left.score - right.score ||
+              left.entry.tool.name.localeCompare(right.entry.tool.name) ||
+              left.entry.id.localeCompare(right.entry.id),
+          );
+  const matched = matchedEntries.slice(0, limit).map(({ entry }) => ({
+    id: entry.id,
+    name: entry.tool.name,
+    description: entry.tool.description.slice(0, MAX_SEARCH_DESCRIPTION_LENGTH),
+    readOnly: entry.tool.readOnly === true,
+  }));
+  if (matched.length === 0) return { tools: [], hint: EMPTY_SEARCH_HINT };
+  const hasMore = matchedEntries.length > limit;
+  return {
+    tools: matched,
+    ...(hasMore
+      ? {
+          total: matchedEntries.length,
+          hasMore: true,
+          hint: `Showing ${matched.length} of ${matchedEntries.length} matches. Search one provider and action at a time (for example, Gmail profile, then Gmail labels).`,
+        }
+      : {}),
+  };
 }
 
 export function loadCatalogEntry(
