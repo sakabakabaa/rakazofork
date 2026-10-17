@@ -4838,3 +4838,7 @@ msgstr "Reconnexion…"
 #: src/components/CoderPanel.tsx
 msgid "Earlier runs"
 msgstr "Exécutions précédentes"
+
+#: src/components/LongReplyMarkdown.tsx
+msgid "Show full response"
+msgstr "Show full response"

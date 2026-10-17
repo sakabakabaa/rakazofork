@@ -4838,3 +4838,7 @@ msgstr "Yeniden bağlanıyor…"
 #: src/components/CoderPanel.tsx
 msgid "Earlier runs"
 msgstr "Önceki çalışmalar"
+
+#: src/components/LongReplyMarkdown.tsx
+msgid "Show full response"
+msgstr "Show full response"

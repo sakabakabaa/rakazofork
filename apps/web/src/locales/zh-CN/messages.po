@@ -4838,3 +4838,7 @@ msgstr "正在重新连接…"
 #: src/components/CoderPanel.tsx
 msgid "Earlier runs"
 msgstr "先前的运行"
+
+#: src/components/LongReplyMarkdown.tsx
+msgid "Show full response"
+msgstr "Show full response"

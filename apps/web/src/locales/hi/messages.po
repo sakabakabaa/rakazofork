@@ -4838,3 +4838,7 @@ msgstr "फिर से कनेक्ट हो रहा है…"
 #: src/components/CoderPanel.tsx
 msgid "Earlier runs"
 msgstr "पिछले रन"
+
+#: src/components/LongReplyMarkdown.tsx
+msgid "Show full response"
+msgstr "Show full response"
