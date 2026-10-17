@@ -475,6 +475,13 @@ export const appContract = {
     update: oc
       .input(z.object({ documentId: Id, content: z.string() }))
       .output(MemoryDocumentSchema),
+    /**
+     * Soft-delete a memory: it stops being retrieved, and its revisions are kept so
+     * forgetting stays distinct from losing the history that explains it.
+     */
+    forget: oc
+      .input(z.object({ documentId: Id }))
+      .output(z.object({ ok: z.literal(true), forgotten: z.boolean() })),
     exportMarkdown: oc.input(z.object({ botId: Id.optional() })).output(z.string()),
     providerConfig: oc.output(SpaceMemoryConfigSchema.nullable()),
     connectProvider: oc

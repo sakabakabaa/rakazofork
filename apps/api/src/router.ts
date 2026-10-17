@@ -3192,6 +3192,7 @@ export function createRouter(deps: RouterDeps) {
           where: {
             spaceId: context.actor.spaceId,
             userId: context.actor.userId,
+            deletedAt: null,
             ...(input.botId ? { botId: input.botId } : {}),
             ...(input.scope ? { scope: input.scope } : {}),
           },
@@ -3212,6 +3213,7 @@ export function createRouter(deps: RouterDeps) {
             id: input.documentId,
             spaceId: context.actor.spaceId,
             userId: context.actor.userId,
+            deletedAt: null,
           },
         });
         if (!doc) throw new IsolationError();
@@ -3240,11 +3242,38 @@ export function createRouter(deps: RouterDeps) {
           updatedAt: new Date().toISOString(),
         };
       }),
+      forget: authed.memory.forget.handler(async ({ context, input }) => {
+        const doc = await deps.prisma.memoryDocument.findFirst({
+          where: {
+            id: input.documentId,
+            spaceId: context.actor.spaceId,
+            userId: context.actor.userId,
+            deletedAt: null,
+          },
+        });
+        if (!doc) throw new IsolationError();
+        const result = await deps.memory.forget?.(
+          {
+            scope: doc.scope as "bot" | "user",
+            botId: doc.botId ?? undefined,
+            path: doc.path,
+          },
+          {
+            operationId: "mem-forget",
+            traceId: "mem-forget",
+            spaceId: context.actor.spaceId,
+            userId: context.actor.userId,
+            signal: new AbortController().signal,
+          },
+        );
+        return { ok: true as const, forgotten: result?.forgotten ?? false };
+      }),
       exportMarkdown: authed.memory.exportMarkdown.handler(async ({ context, input }) => {
         const docs = await deps.prisma.memoryDocument.findMany({
           where: {
             spaceId: context.actor.spaceId,
             userId: context.actor.userId,
+            deletedAt: null,
             ...(input.botId ? { botId: input.botId } : {}),
           },
         });

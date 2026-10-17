@@ -41,6 +41,10 @@ import type {
   MemoryCapabilities,
   MemoryCommitRequest,
   MemoryExportRequest,
+  MemoryForgetRequest,
+  MemoryForgetResult,
+  MemoryRankedDocument,
+  MemoryRankRequest,
   MemoryReadRequest,
   MemoryRevision,
   MemorySearchRequest,
@@ -212,6 +216,18 @@ export interface MemoryStore {
   read(request: MemoryReadRequest, context: AdapterContext): Promise<MemorySnapshot>;
   search(request: MemorySearchRequest, context: AdapterContext): Promise<MemorySearchResult[]>;
   commit(request: MemoryCommitRequest, context: AdapterContext): Promise<MemoryRevision>;
+  /**
+   * Rank one bot's live documents against a query: its own bot-scope documents plus
+   * the user-scope documents shared within the space. Optional so a store without a
+   * retrieval index can omit it; callers then fall back to reading and sorting by
+   * recency, which is what every store did before ranking existed.
+   */
+  rank?(request: MemoryRankRequest, context: AdapterContext): Promise<MemoryRankedDocument[]>;
+  /**
+   * Soft-delete a document: it stops being retrieved, and its revisions are kept so
+   * deletion stays distinct from losing the history that explains it.
+   */
+  forget?(request: MemoryForgetRequest, context: AdapterContext): Promise<MemoryForgetResult>;
   exportMarkdown(
     request: MemoryExportRequest,
     context: AdapterContext,
