@@ -4075,3 +4075,42 @@ describe("link favicons", () => {
     expect(favicon).not.toHaveBeenCalled();
   });
 });
+
+describe("link previews", () => {
+  function previewClient(actor: Actor | null) {
+    const preview = vi.fn().mockResolvedValue({
+      preview: { url: "https://x.com/", title: "X", siteName: "X" },
+    });
+    const deps = {
+      prisma: {} as PrismaClient,
+      linkPreviews: { preview },
+      env: { webOrigin: "http://127.0.0.1:5173", screenProxySecret: "fake-test-secret" },
+      dataDir: "/tmp/rakazo-router-test",
+    } as unknown as RouterDeps;
+    const client = createRouterClient(createRouter(deps), { context: { actor } });
+    return { client, preview };
+  }
+
+  const reader = {
+    spaceId: "workspace-1",
+    userId: "user-1",
+    email: "user@rakazo.test",
+    isDeploymentOwner: false,
+  } satisfies Actor;
+
+  it("passes a signed-in request to the preview resolver", async () => {
+    const { client, preview } = previewClient(reader);
+    await expect(client.links.preview({ url: "https://x.com/" })).resolves.toEqual({
+      preview: { url: "https://x.com/", title: "X", siteName: "X" },
+    });
+    expect(preview).toHaveBeenCalledWith("https://x.com/");
+  });
+
+  it("requires a signed-in reader", async () => {
+    const { client, preview } = previewClient(null);
+    await expect(client.links.preview({ url: "https://x.com/" })).rejects.toMatchObject({
+      code: "UNAUTHORIZED",
+    });
+    expect(preview).not.toHaveBeenCalled();
+  });
+});

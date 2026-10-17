@@ -311,6 +311,27 @@ describe("openai-compatible provider", () => {
     }
   });
 
+  it("uses the paired Undici transport for pinned hosts even when Pi supplies a fetch wrapper", async () => {
+    let wrapperCalled = false;
+    const safeFetch = createOpenAiCompatibleFetch(
+      async () => {
+        wrapperCalled = true;
+        return new Response("{}", { status: 200 });
+      },
+      async () => {
+        throw new Error("lookup reached");
+      },
+      { allowPublic: true, forcePairedDispatcher: true },
+    );
+
+    await expect(
+      safeFetch("https://models.example.test/v1/chat/completions"),
+    ).rejects.toMatchObject({
+      cause: { message: "lookup reached" },
+    });
+    expect(wrapperCalled).toBe(false);
+  });
+
   it("flattens a global Request so the package fetch can dispatch it", async () => {
     // undici's fetch reads a foreign Request as "[object Request]"; reaching
     // the lookup proves the request was dispatched with its URL instead.

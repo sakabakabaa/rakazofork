@@ -781,6 +781,11 @@ export const appContract = {
   /** External messaging surface: link state, group channels, agent connections. */
   messaging: {
     status: oc.output(MessagingStatusSchema),
+    whatsappWeb: {
+      status: oc.output(z.object({ enabled: z.boolean(), state: z.string(), qrDataUrl: z.string().nullable(), phone: z.string().nullable() })),
+      connect: oc.output(z.object({ ok: z.literal(true) })),
+      disconnect: oc.output(z.object({ ok: z.literal(true) })),
+    },
     link: {
       /** Issue a short-lived code the user sends to the line from a chat app. */
       start: oc
@@ -894,6 +899,21 @@ export const appContract = {
       // The longest origin: a scheme, a 253-character host name and a port.
       .input(z.object({ origin: z.string().max("https://".length + 253 + ":65535".length) }))
       .output(z.object({ icon: z.string().nullable(), retry: z.boolean().optional() })),
+    /** Resolve safe Open Graph metadata for a chat link preview. */
+    preview: oc.input(z.object({ url: z.string().max(2_000) })).output(
+      z.object({
+        preview: z
+          .object({
+            url: z.string(),
+            title: z.string(),
+            description: z.string().optional(),
+            siteName: z.string().optional(),
+            imageUrl: z.string().optional(),
+          })
+          .nullable(),
+        retry: z.boolean().optional(),
+      }),
+    ),
   },
   runs: {
     list: oc.input(z.object({ filter: z.enum(["active", "recent"]) })).output(RunsListOutputSchema),

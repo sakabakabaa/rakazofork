@@ -132,7 +132,9 @@ describe("lazy tool catalog", () => {
 
   it("returns an empty catalog as an empty tool list", () => {
     expect(catalogEntries([])).toEqual([]);
-    expect(searchCatalog([], { query: "anything" })).toEqual({ tools: [] });
+    const result = searchCatalog([], { query: "anything" });
+    expect(result).toMatchObject({ tools: [] });
+    expect("hint" in result && result.hint).toContain("does not mean the provider is disconnected");
   });
 
   it("lists grouped names for an empty query without dumping schemas", () => {
@@ -213,6 +215,8 @@ describe("lazy tool catalog", () => {
     expect(JSON.stringify(result)).not.toContain("tool_0");
     const searched = searchCatalog(entries, { group: "huge", query: "tool_0" });
     expect("tools" in searched && searched.tools.map((item) => item.name)).toEqual(["tool_0"]);
+    const numeric = searchCatalog(entries, { group: "huge", query: "tool_100" });
+    expect("tools" in numeric && numeric.tools.map((item) => item.name)).toEqual(["tool_100"]);
   });
 
   it("returns groups with counts when the name index exceeds budget", () => {

@@ -64,6 +64,7 @@ import {
 } from "./pi-runtime-limits.js";
 import type { PiSessionHandle, PiSessionRecorder } from "./pi-session.js";
 import { PiJsonlSessionRecorder } from "./pi-session.js";
+import type { ModelCallTiming } from "./pi-usage.js";
 import { observedPiStream } from "./pi-usage.js";
 import type { RuntimeContextDecision } from "./runtime-context.js";
 import { createRuntimeContextPolicy } from "./runtime-context.js";
@@ -77,6 +78,22 @@ interface ToolCallBudget {
   exceeded: boolean;
   limit: number;
   inFlight: number;
+  performance: RuntimePerformance;
+}
+interface RuntimePerformance {
+  modelCalls: number;
+  modelErrors: number;
+  modelDurationMs: number;
+  timeToFirstEventMs: number;
+  firstEventCount: number;
+  inputTokens: number | null;
+  outputTokens: number | null;
+  cacheReadTokens: number | null;
+  cacheWriteTokens: number | null;
+  reasoningTokens: number | null;
+  toolCalls: number;
+  toolErrors: number;
+  toolDurationMs: number;
 }
 // Optional fuse is process-local. continueRun on another worker starts at zero.
 const toolCallBudgetsByRun = new Map<string, ToolCallBudget>();
@@ -209,6 +226,8 @@ export class PiAgentRuntime implements AgentRuntime {
     controller: AbortController,
     context?: Partial<AdapterContext>,
   ): AsyncGenerator<AgentRuntimeEvent, void> {
+    const runtimeStartedAt = Date.now();
+    let runtimeOutcome: "completed" | "error" | "cancelled" | "paused" = "completed";
     const signal = context?.signal
       ? AbortSignal.any([controller.signal, context.signal])
       : controller.signal;
@@ -313,6 +332,13 @@ export class PiAgentRuntime implements AgentRuntime {
           prepareContext: contextPolicy.prepareContext,
           imageTokens: estimatePiImageTokens,
           recordUsage: request.onUsage,
+          onCallTiming: (timing: ModelCallTiming) => {
+            recordModelTiming(trackedBudget!.performance, timing);
+            getLogger().info("agent.model.call.completed", {
+              runId: request.runId,
+              ...timing,
+            });
+          },
           onUsage: (usage: AgentUsage) => {
             contextPolicy.onUsage(usage);
             const decision = contextPolicy.getDecision();
@@ -658,9 +684,31 @@ export class PiAgentRuntime implements AgentRuntime {
         }
         queue.push(streamed.trim() ? { type: "done", text: streamed } : { type: "done" });
       } catch (error) {
+        runtimeOutcome = "error";
         const message = sanitizeError(error instanceof Error ? error.message : String(error));
         queue.fail(new Error(message));
       } finally {
+        if (signal.aborted) runtimeOutcome = "cancelled";
+        else if (resumeHost?.pausePending) runtimeOutcome = "paused";
+        if (trackedBudget) {
+          try {
+            const performance = trackedBudget.performance;
+            getLogger().info("agent.runtime.performance.completed", {
+              runId: request.runId,
+              durationMs: Math.max(0, Date.now() - runtimeStartedAt),
+              outcome: runtimeOutcome,
+              ...performance,
+              averageTimeToFirstEventMs:
+                performance.firstEventCount > 0
+                  ? Math.round(performance.timeToFirstEventMs / performance.firstEventCount)
+                  : null,
+              toolCallLimit: trackedBudget.limit || null,
+              toolCallLimitExceeded: trackedBudget.exceeded,
+            });
+          } catch {
+            /* Runtime diagnostics must not affect task completion. */
+          }
+        }
         queue.close();
         if (trackedBudget) {
           const keepForResume =
@@ -1295,10 +1343,16 @@ function toAgentTool(tool: ConnectorTool, host: ToolHost, exposedName: string): 
         throw error;
       } finally {
         endToolCall(host);
+        const durationMs = Math.max(0, Date.now() - startedAt);
+        host.toolCallBudget.performance.toolCalls += 1;
+        host.toolCallBudget.performance.toolDurationMs += durationMs;
+        if (failure !== undefined || toolResultIsError(result)) {
+          host.toolCallBudget.performance.toolErrors += 1;
+        }
         const completion: AgentToolCompletion = {
           name: tool.name,
           executionId,
-          durationMs: Math.max(0, Date.now() - startedAt),
+          durationMs,
           ...(result === undefined ? {} : { result }),
           ...(failure === undefined ? {} : { error: failure }),
           ...(host.pausePending ? { paused: true } : {}),
@@ -1451,6 +1505,13 @@ async function executeSubagent(host: ToolHost, executionId: string, args: Record
               prepareContext: contextPolicy.prepareContext,
               imageTokens: estimatePiImageTokens,
               recordUsage: host.request.onUsage,
+              onCallTiming: (timing) => {
+                recordModelTiming(host.toolCallBudget.performance, timing);
+                getLogger().info("agent.model.call.completed", {
+                  runId: host.request.runId,
+                  ...timing,
+                });
+              },
               onUsage: (usage) => {
                 contextPolicy.onUsage(usage);
                 const decision = contextPolicy.getDecision();
@@ -2194,6 +2255,9 @@ function toolCallBudgetFor(runId: string): ToolCallBudget {
   if (existing) {
     existing.inFlight = 0;
     existing.limit = maxToolCallsPerTurn();
+    // Keep the run-level fuse across resumes, but report only this invocation's
+    // work in its performance summary.
+    existing.performance = newRuntimePerformance();
     return existing;
   }
   const budget: ToolCallBudget = {
@@ -2201,9 +2265,62 @@ function toolCallBudgetFor(runId: string): ToolCallBudget {
     exceeded: false,
     limit: maxToolCallsPerTurn(),
     inFlight: 0,
+    performance: newRuntimePerformance(),
   };
   if (budget.limit > 0) toolCallBudgetsByRun.set(runId, budget);
   return budget;
+}
+
+function newRuntimePerformance(): RuntimePerformance {
+  return {
+    modelCalls: 0,
+    modelErrors: 0,
+    modelDurationMs: 0,
+    timeToFirstEventMs: 0,
+    firstEventCount: 0,
+    inputTokens: null,
+    outputTokens: null,
+    cacheReadTokens: null,
+    cacheWriteTokens: null,
+    reasoningTokens: null,
+    toolCalls: 0,
+    toolErrors: 0,
+    toolDurationMs: 0,
+  };
+}
+
+function recordModelTiming(performance: RuntimePerformance, timing: ModelCallTiming) {
+  performance.modelCalls += 1;
+  performance.modelDurationMs += timing.durationMs;
+  if (timing.outcome === "error") performance.modelErrors += 1;
+  if (timing.timeToFirstEventMs !== null) {
+    performance.timeToFirstEventMs += timing.timeToFirstEventMs;
+    performance.firstEventCount += 1;
+  }
+  performance.inputTokens = addReportedTokens(performance.inputTokens, timing.inputTokens);
+  performance.outputTokens = addReportedTokens(performance.outputTokens, timing.outputTokens);
+  performance.cacheReadTokens = addReportedTokens(
+    performance.cacheReadTokens,
+    timing.cacheReadTokens,
+  );
+  performance.cacheWriteTokens = addReportedTokens(
+    performance.cacheWriteTokens,
+    timing.cacheWriteTokens,
+  );
+  performance.reasoningTokens = addReportedTokens(
+    performance.reasoningTokens,
+    timing.reasoningTokens,
+  );
+}
+
+function addReportedTokens(total: number | null, value: number | null): number | null {
+  return value === null ? total : (total ?? 0) + value;
+}
+
+function toolResultIsError(result: unknown): boolean {
+  if (!result || typeof result !== "object") return false;
+  const record = result as Record<string, unknown>;
+  return record.ok === false || typeof record.error === "string";
 }
 
 function releaseToolCallBudget(runId: string, keepForResume: boolean) {

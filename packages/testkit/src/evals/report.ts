@@ -31,6 +31,8 @@ export type TrialResult = {
   cleanupFailed: boolean;
   latencyMs: number;
   toolCalls: number;
+  toolFailures: number;
+  toolRetries: number;
   inputTokens: number | null;
   outputTokens: number | null;
   costUsd: number | null;
@@ -64,6 +66,8 @@ export function summarize(results: readonly TrialResult[]) {
         attempted.reduce((n, r) => n + r.modelCalls, 0),
       ),
       modelCalls: attempted.reduce((n, r) => n + r.modelCalls, 0),
+      toolFailures: attempted.reduce((n, r) => n + r.toolFailures, 0),
+      toolRetries: attempted.reduce((n, r) => n + r.toolRetries, 0),
       costSources: [...new Set(attempted.flatMap((r) => r.costSources ?? []))],
       costUsd:
         attempted.length && attempted.every((r) => r.costUsd !== null)
@@ -147,6 +151,8 @@ export function emptyTrial(caseId: string, trial: number): TrialResult {
     cleanupFailed: false,
     latencyMs: 0,
     toolCalls: 0,
+    toolFailures: 0,
+    toolRetries: 0,
     inputTokens: null,
     outputTokens: null,
     costUsd: null,
@@ -169,6 +175,26 @@ export function emptyTrial(caseId: string, trial: number): TrialResult {
     trace: [],
     artifacts: {},
   };
+}
+
+export function measureToolRetries(events: readonly { type: string; payload: unknown }[]): {
+  toolFailures: number;
+  toolRetries: number;
+} {
+  const failedTools = new Set<string>();
+  let toolFailures = 0;
+  let toolRetries = 0;
+  for (const event of events) {
+    const payload = event.payload as { name?: string; outcome?: string };
+    const name = payload.name ?? "unknown";
+    if (event.type === "agent.tool.completed" && payload.outcome === "error") {
+      failedTools.add(name);
+      toolFailures++;
+    } else if (event.type === "agent.tool.called" && failedTools.has(name)) {
+      toolRetries++;
+    }
+  }
+  return { toolFailures, toolRetries };
 }
 
 export function validateControls(input: {

@@ -5,11 +5,12 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
-import type { LinkFavicons } from "./markdown.web";
+import type { LinkFavicons, LinkPreviews } from "./markdown.web";
 import {
   ChatMarkdown,
   LinkFaviconsContext,
   LinkifiedText,
+  LinkPreviewsContext,
   RemoteImagesContext,
 } from "./markdown.web";
 
@@ -197,7 +198,7 @@ describe("web markdown website links", () => {
       "Traffic plunges. [Post](https://icon-a.example.test/p/1) and [odds](https://icon-a.example.test/o)",
       { load },
     );
-    const links = view.container.querySelectorAll("a");
+    const links = view.container.querySelectorAll("a.rk-chat-link");
     expect(links).toHaveLength(2);
     const [post] = links;
     expect(post?.getAttribute("href")).toBe("https://icon-a.example.test/p/1");
@@ -465,6 +466,270 @@ async function render(node: ReactNode) {
 }
 
 describe("web external link confirmation", () => {
+  it("renders a standalone URL as an in-place Open Graph card without duplicating it", async () => {
+    let resolvePreview!: (value: {
+      preview: { url: string; title: string; siteName: string };
+    }) => void;
+    const load = vi.fn(
+      () =>
+        new Promise<{
+          preview: { url: string; title: string; siteName: string };
+        }>((resolve) => {
+          resolvePreview = resolve;
+        }),
+    );
+    const linkPreviews: LinkPreviews = { load };
+    const href = "https://github.com/elie222/rakazo?preview-test=in-place";
+    const view = await render(
+      <LinkPreviewsContext.Provider value={linkPreviews}>
+        <ChatMarkdown>{`Before\n\n${href}\n\nAfter`}</ChatMarkdown>
+      </LinkPreviewsContext.Provider>,
+    );
+
+    const markdown = view.container.querySelector(".rk-chat-markdown");
+    expect(markdown?.children[0]?.tagName).toBe("P");
+    expect(markdown?.children[1]?.classList.contains("rk-chat-link-preview-loading")).toBe(true);
+    expect(markdown?.children[2]?.tagName).toBe("P");
+    expect(markdown?.querySelectorAll(".rk-chat-link-preview")).toHaveLength(1);
+    expect(markdown?.textContent).not.toContain(href);
+
+    await act(async () => {
+      resolvePreview({
+        preview: { url: href, title: "Rakazo on GitHub", siteName: "GitHub" },
+      });
+    });
+    expect(view.container.querySelector(".rk-chat-preview-title")?.textContent).toBe(
+      "Rakazo on GitHub",
+    );
+    await view.cleanup();
+  });
+
+  it("previews descriptive Markdown links and ignores URLs in code", async () => {
+    const load = vi.fn(async (url: string) => ({
+      preview: { url, title: `Preview for ${url}`, siteName: "example.test" },
+    }));
+    const linkPreviews: LinkPreviews = { load };
+    const view = await render(
+      <LinkPreviewsContext.Provider value={linkPreviews}>
+        <ChatMarkdown>
+          {
+            "[Read docs](https://example.test/docs) and [API guide](<https://example.test/api> \"API\")\n\n`https://code.example.test`"
+          }
+        </ChatMarkdown>
+      </LinkPreviewsContext.Provider>,
+    );
+    expect(view.container.querySelector("a")?.textContent).toContain("Read docs");
+    expect(view.container.querySelector("code")?.textContent).toBe("https://code.example.test");
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(load.mock.calls.map(([url]) => url)).toEqual([
+      "https://example.test/docs",
+      "https://example.test/api",
+    ]);
+    expect(view.container.querySelectorAll(".rk-chat-link-preview")).toHaveLength(2);
+    await view.cleanup();
+  });
+
+  it("loads a preview card for one link in a bot paragraph", async () => {
+    const load = vi.fn(async (url: string) => ({
+      preview: {
+        url,
+        title: "Rakazo on GitHub",
+        description: "A self-hosted agent workspace.",
+        siteName: "GitHub",
+      },
+    }));
+    const linkPreviews: LinkPreviews = { load };
+    const view = await render(
+      <LinkPreviewsContext.Provider value={linkPreviews}>
+        <ChatMarkdown>{"Source: https://github.com/elie222/rakazo"}</ChatMarkdown>
+      </LinkPreviewsContext.Provider>,
+    );
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(load).toHaveBeenCalledWith("https://github.com/elie222/rakazo");
+    expect(view.container.querySelector(".rk-chat-preview-title")?.textContent).toBe(
+      "Rakazo on GitHub",
+    );
+    await view.cleanup();
+  });
+
+  it("shows the Open Graph image only when remote images are enabled, and hides broken images", async () => {
+    const href = "https://shop.example.test/item/42";
+    const linkPreviews: LinkPreviews = {
+      load: async (url) => ({
+        preview: {
+          url,
+          title: "A useful item",
+          siteName: "Shop",
+          imageUrl: "https://cdn.example.test/item.jpg",
+        },
+      }),
+    };
+    const view = await render(
+      <RemoteImagesContext.Provider value={true}>
+        <LinkPreviewsContext.Provider value={linkPreviews}>
+          <ChatMarkdown>{`See ${href}`}</ChatMarkdown>
+        </LinkPreviewsContext.Provider>
+      </RemoteImagesContext.Provider>,
+    );
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    let image = view.container.querySelector<HTMLImageElement>(".rk-chat-preview-image");
+    expect(image?.getAttribute("src")).toBe("https://cdn.example.test/item.jpg");
+    expect(image?.getAttribute("loading")).toBe("lazy");
+    expect(image?.getAttribute("referrerpolicy")).toBe("no-referrer");
+    await act(async () => {
+      image?.dispatchEvent(new Event("error"));
+    });
+    image = view.container.querySelector(".rk-chat-preview-image");
+    expect(image).toBeNull();
+    expect(view.container.querySelector(".rk-chat-preview-title")?.textContent).toBe(
+      "A useful item",
+    );
+    await view.cleanup();
+  });
+
+  it("does not request Open Graph images when remote images are disabled", async () => {
+    const linkPreviews: LinkPreviews = {
+      load: async (url) => ({
+        preview: {
+          url,
+          title: "Private by default",
+          imageUrl: "https://cdn.example.test/private.jpg",
+        },
+      }),
+    };
+    const view = await render(
+      <RemoteImagesContext.Provider value={false}>
+        <LinkPreviewsContext.Provider value={linkPreviews}>
+          <ChatMarkdown>{"https://shop.example.test/item"}</ChatMarkdown>
+        </LinkPreviewsContext.Provider>
+      </RemoteImagesContext.Provider>,
+    );
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(view.container.querySelector(".rk-chat-preview-title")?.textContent).toBe(
+      "Private by default",
+    );
+    expect(view.container.querySelector(".rk-chat-preview-image")).toBeNull();
+    await view.cleanup();
+  });
+
+  it("loads a preview card under a table with one link", async () => {
+    const load = vi.fn(async (url: string) => ({
+      preview: { url, title: "Stylish Chair S Red", siteName: "amazon.sg" },
+    }));
+    const linkPreviews: LinkPreviews = { load };
+    const table = "| Item | Link |\n| --- | --- |\n| Chair | https://www.amazon.sg/dp/B000WETLA4 |";
+    const view = await render(
+      <LinkPreviewsContext.Provider value={linkPreviews}>
+        <ChatMarkdown>{table}</ChatMarkdown>
+      </LinkPreviewsContext.Provider>,
+    );
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(load).toHaveBeenCalledWith("https://www.amazon.sg/dp/B000WETLA4");
+    expect(view.container.querySelector(".rk-chat-preview-title")?.textContent).toBe(
+      "Stylish Chair S Red",
+    );
+    await view.cleanup();
+  });
+
+  it("loads a card for every distinct web link, skipping code", async () => {
+    const load = vi.fn(async (url: string) => ({
+      preview: { url, title: `Page ${url}`, siteName: "example.test" },
+    }));
+    const linkPreviews: LinkPreviews = { load };
+    const text = [
+      "- https://a.example.test/one",
+      "- https://b.example.test/two",
+      "- https://a.example.test/one",
+      "",
+      "`https://code.example.test/skip`",
+      "",
+      "```",
+      "https://fenced.example.test/skip",
+      "```",
+    ].join("\n");
+    const view = await render(
+      <LinkPreviewsContext.Provider value={linkPreviews}>
+        <ChatMarkdown>{text}</ChatMarkdown>
+      </LinkPreviewsContext.Provider>,
+    );
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(load.mock.calls.map(([url]) => url)).toEqual([
+      "https://a.example.test/one",
+      "https://b.example.test/two",
+    ]);
+    expect(view.container.querySelectorAll(".rk-chat-link-preview")).toHaveLength(2);
+    await view.cleanup();
+  });
+
+  it("uses a readable query title instead of repeating a raw URL when metadata is unavailable", async () => {
+    const load = vi.fn(async () => ({ preview: null }));
+    const linkPreviews: LinkPreviews = { load };
+    const view = await render(
+      <LinkPreviewsContext.Provider value={linkPreviews}>
+        <ChatMarkdown>{"Search: https://shop.example.test/search?q=chair"}</ChatMarkdown>
+      </LinkPreviewsContext.Provider>,
+    );
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(view.container.querySelector(".rk-chat-preview-site")?.textContent).toBe(
+      "shop.example.test",
+    );
+    expect(view.container.querySelector(".rk-chat-preview-title")?.textContent).toBe(
+      "chair",
+    );
+    await view.cleanup();
+  });
+
+  it("keeps a descriptive Markdown label when a site has no Open Graph metadata", async () => {
+    const linkPreviews: LinkPreviews = { load: async () => ({ preview: null }) };
+    const view = await render(
+      <LinkPreviewsContext.Provider value={linkPreviews}>
+        <ChatMarkdown>{"[MahiToys educational toy](https://shop.example.test/products/123)"}</ChatMarkdown>
+      </LinkPreviewsContext.Provider>,
+    );
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(view.container.querySelector(".rk-chat-preview-title")?.textContent).toBe(
+      "MahiToys educational toy",
+    );
+    expect(view.container.querySelector(".rk-chat-preview-title")?.textContent).not.toContain(
+      "https://",
+    );
+    await view.cleanup();
+  });
+
+  it("loads a preview card for a single link in user text", async () => {
+    const load = vi.fn(async (url: string) => ({
+      preview: { url, title: "Example", siteName: "example.test" },
+    }));
+    const linkPreviews: LinkPreviews = { load };
+    const view = await render(
+      <LinkPreviewsContext.Provider value={linkPreviews}>
+        <LinkifiedText>{"See https://user-text-preview.example.test/docs"}</LinkifiedText>
+      </LinkPreviewsContext.Provider>,
+    );
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(load).toHaveBeenCalledWith("https://user-text-preview.example.test/docs");
+    expect(view.container.querySelector(".rk-chat-preview-title")?.textContent).toBe("Example");
+    await view.cleanup();
+  });
+
   it("asks before an external bot link and opens it only after confirmation", async () => {
     const open = vi.spyOn(window, "open").mockReturnValue(null);
     const view = await render(

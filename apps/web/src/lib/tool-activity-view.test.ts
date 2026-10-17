@@ -6,6 +6,7 @@ import {
   messageHasVisibleBlocks,
   renderableMessageBlocks,
   shouldRenderToolCard,
+  toolActivityByRun,
   toolStepCount,
 } from "./tool-activity-view";
 
@@ -47,23 +48,85 @@ describe("tool step count", () => {
   });
 });
 
+describe("tool activity by run", () => {
+  it("combines prior completed calls with the latest streaming activity in order", () => {
+    const history = toolActivityByRun([
+      {
+        id: "message-1",
+        role: "bot",
+        runId: "run-1",
+        blocks: [
+          { kind: "text", text: "Searching the web." },
+          { kind: "steps", steps: [{ label: "Web search", count: 1 }], durationMs: 1200 },
+        ],
+      },
+      {
+        id: "progress:run-1",
+        role: "bot",
+        runId: "run-1",
+        blocks: [
+          { kind: "steps", steps: [{ label: "Open page", count: 1 }] },
+          { kind: "progress", text: "Read article", activity: true },
+        ],
+      },
+    ]);
+
+    expect(history.get("run-1")).toEqual({
+      steps: [
+        { label: "Web search", count: 1 },
+        { label: "Open page", count: 1 },
+      ],
+      durationMs: 1200,
+      latestMessageId: "progress:run-1",
+    });
+  });
+
+  it("keeps separate runs isolated and ignores user activity-shaped blocks", () => {
+    const history = toolActivityByRun([
+      {
+        id: "user-message",
+        role: "user",
+        runId: "run-1",
+        blocks: [{ kind: "steps", steps: [{ label: "Ignore", count: 1 }] }],
+      },
+      {
+        id: "progress:run-2",
+        role: "bot",
+        runId: "run-2",
+        blocks: [{ kind: "steps", steps: [{ label: "Read file", count: 1 }] }],
+      },
+    ]);
+    expect([...history.keys()]).toEqual(["run-2"]);
+  });
+});
+
 describe("tool card render decisions", () => {
-  it("renders only steps blocks, and only when the preference is on", () => {
+  it("renders completed steps and live activity only when enabled", () => {
     expect(shouldRenderToolCard(stepsBlock, true)).toBe(true);
     expect(shouldRenderToolCard(stepsBlock, false)).toBe(false);
     expect(shouldRenderToolCard(textBlock, true)).toBe(false);
     expect(shouldRenderToolCard(liveActivity, true)).toBe(false);
+    expect(shouldRenderToolCard(liveActivity, true, true)).toBe(true);
+    expect(shouldRenderToolCard(liveActivity, false, true)).toBe(false);
   });
 
-  it("keeps text order and drops hidden activity per preference", () => {
+  it("keeps completed history in messages but includes activity on live messages", () => {
     const blocks = [textBlock, stepsBlock, liveActivity, narration];
     expect(renderableMessageBlocks(blocks, true)).toEqual([textBlock, stepsBlock, narration]);
     expect(renderableMessageBlocks(blocks, false)).toEqual([textBlock, narration]);
+    expect(renderableMessageBlocks(blocks, true, true)).toEqual([
+      textBlock,
+      stepsBlock,
+      liveActivity,
+      narration,
+    ]);
   });
 
-  it("never surfaces a progress block marked as activity", () => {
+  it("surfaces an activity-only live message when enabled", () => {
     expect(messageHasVisibleBlocks([liveActivity], true)).toBe(false);
     expect(messageHasVisibleBlocks([liveActivity], false)).toBe(false);
+    expect(messageHasVisibleBlocks([liveActivity], true, true)).toBe(true);
+    expect(messageHasVisibleBlocks([liveActivity], false, true)).toBe(false);
   });
 
   it("keeps a steps-only message visible only when the preference is on", () => {
@@ -82,8 +145,9 @@ describe("tool-only narration", () => {
 
   it("is false once the bot has written something, or when tool cards are hidden", () => {
     expect(isToolOnlyNarration([stepsBlock, textBlock], true)).toBe(false);
-    expect(isToolOnlyNarration([narration, liveActivity, stepsBlock], true)).toBe(false);
+    expect(isToolOnlyNarration([narration, liveActivity, stepsBlock], true, true)).toBe(false);
     expect(isToolOnlyNarration([liveActivity, stepsBlock], false)).toBe(false);
     expect(isToolOnlyNarration([liveActivity], true)).toBe(false);
+    expect(isToolOnlyNarration([liveActivity], true, true)).toBe(true);
   });
 });

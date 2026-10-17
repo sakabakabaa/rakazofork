@@ -1,3 +1,4 @@
+import type { WebFetchResult, WebSearchHit } from "@rakazo/adapter-kit";
 import type { HistoryScenario } from "./history-fixtures.js";
 import { balancedAmbiguityFixture, gradeHistory, historyFixture } from "./history-fixtures.js";
 import { CUSTOMER_SUPPORT_PROVIDERS, CUSTOMER_SUPPORT_TOOLS } from "./service-contract.js";
@@ -27,6 +28,7 @@ export type Evidence = {
   priorMemory: string;
   destinationWrites: number;
   toolNames: string[];
+  botNames?: string[];
   messaging: {
     originThreadId: string | null;
     outbound: Array<{ threadId: string; body: string; handle: string }>;
@@ -42,6 +44,7 @@ export type EvalCase = {
   expectedClarification?: true;
   connections?: string[];
   taughtSkill?: true;
+  webFixture?: { searchHits: WebSearchHit[]; fetchResult: WebFetchResult };
   history?: ReturnType<typeof historyFixture>;
   configure?: (services: EvalServices) => void;
   grade: (evidence: Evidence) => Criterion[];
@@ -151,6 +154,75 @@ export const EVAL_CASES: EvalCase[] = [
         "computed-csv",
         file(e, "results/totals.csv").replaceAll("\r", "") === "item,total\napples,12\npears,14",
       ),
+      noWrites(e),
+    ],
+  },
+  {
+    id: "terminal-file",
+    purpose:
+      "Use the terminal for a deterministic command, then persist and verify its output as a file.",
+    steps: [
+      {
+        ask: "Run `echo RAKAZO_TERMINAL_CHECK` in the terminal, save exactly its output in results/terminal-check.txt, then read the file back to verify it.",
+      },
+    ],
+    files: ["results/terminal-check.txt"],
+    grade: (e) => [
+      check("terminal-used", e.toolNames.includes("shell")),
+      check("file-verified", e.toolNames.includes("read_file")),
+      check(
+        "terminal-output-saved",
+        file(e, "results/terminal-check.txt") === "RAKAZO_TERMINAL_CHECK",
+      ),
+      noWrites(e),
+    ],
+  },
+  {
+    id: "browser-research",
+    purpose:
+      "Research a seeded web source, fetch it, and give a source-grounded answer with its link.",
+    webFixture: {
+      searchHits: [
+        {
+          title: "Example Observatory — Visitor guide",
+          url: "https://example.test/observatory/visit",
+          snippet: "The observatory opens at 9:30 AM; last entry is 4:15 PM.",
+        },
+      ],
+      fetchResult: {
+        url: "https://example.test/observatory/visit",
+        title: "Example Observatory — Visitor guide",
+        text: "Visitor hours: 9:30 AM to 5:00 PM. Last entry is 4:15 PM. The observatory is closed on Mondays.",
+        truncated: false,
+      },
+    },
+    steps: [
+      {
+        ask: "Find the observatory visitor hours, last entry time, and weekly closure day. Verify the source page and include its link.",
+      },
+    ],
+    grade: (e) => [
+      check("web-search-used", e.toolNames.includes("web_search")),
+      check("source-fetched", e.toolNames.includes("web_fetch")),
+      check(
+        "source-grounded-answer",
+        /9:30\s*AM/i.test(e.text) && /4:15\s*PM/i.test(e.text) && /Monday/i.test(e.text),
+      ),
+      check("source-linked", /https:\/\/example\.test\/observatory\/visit/i.test(e.text)),
+      noWrites(e),
+    ],
+  },
+  {
+    id: "agent-setup",
+    purpose: "Create a persistent teammate bot when asked, and verify it exists.",
+    steps: [
+      {
+        ask: "Create a new agent named Research Scout for web research. Do not start a task for it yet.",
+      },
+    ],
+    grade: (e) => [
+      check("persistent-bot-tool-used", e.toolNames.includes("spawn_bot")),
+      check("bot-created", e.botNames?.includes("Research Scout") ?? false),
       noWrites(e),
     ],
   },

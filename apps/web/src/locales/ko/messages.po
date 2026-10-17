@@ -4814,3 +4814,27 @@ msgstr "이름"
 #: src/pages/Welcome.tsx
 msgid "Your team of always-on agents<0/>that you can give real work to."
 msgstr "언제든 실제 작업을 맡길 수 있는<0/>나만의 Agent 팀"
+
+#: src/components/CoderPanel.tsx
+msgid "Coder"
+msgstr "코딩 도우미"
+
+#: src/components/CoderPanel.tsx
+msgid "Stop run"
+msgstr "실행 중지"
+
+#: src/components/CoderPanel.tsx
+msgid "No coder runs yet."
+msgstr "아직 실행 내역이 없습니다."
+
+#: src/components/CoderPanel.tsx
+msgid "Could not load coder activity."
+msgstr "활동을 불러올 수 없습니다."
+
+#: src/components/CoderPanel.tsx
+msgid "Reconnecting…"
+msgstr "다시 연결 중…"
+
+#: src/components/CoderPanel.tsx
+msgid "Earlier runs"
+msgstr "이전 실행"

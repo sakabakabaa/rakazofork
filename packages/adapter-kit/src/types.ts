@@ -950,6 +950,8 @@ export interface CloudAgentSnapshot {
   branch?: string;
   prUrl?: string;
   latestRunId?: string;
+  /** One concise live action label, not model reasoning or raw tool output. */
+  latestAction?: string;
 }
 
 export interface CloudAgentReplyRequest {

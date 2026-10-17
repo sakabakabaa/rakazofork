@@ -110,6 +110,7 @@ afterEach(() => {
 
 it("flips the stored tool activity preference from the settings toggle", async () => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  localStorage.setItem(TOOL_ACTIVITY_STORAGE_KEY, "off");
   const container = document.createElement("div");
   document.body.append(container);
   const root = createRoot(container);

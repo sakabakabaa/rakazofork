@@ -1,7 +1,7 @@
 /// <reference path="./linkify-it.d.ts" />
 import LinkifyIt from "linkify-it";
 import type { ReactNode } from "react";
-import { createContext, useContext, useEffect, useSyncExternalStore } from "react";
+import { createContext, useContext, useEffect, useState, useSyncExternalStore } from "react";
 
 export type ChatMarkdownProps = {
   children: string;
@@ -301,6 +301,84 @@ export type LinkFavicons = {
 };
 
 export const LinkFaviconsContext = createContext<LinkFavicons | null>(null);
+
+/**
+ * A link's page metadata, resolved by the server so a device never contacts the linked site.
+ * `imageUrl` is a remote image: only render it when the reader opted into remote images.
+ */
+export type LinkPreview = {
+  url: string;
+  title: string;
+  description?: string;
+  siteName?: string;
+  imageUrl?: string;
+};
+
+/**
+ * Where link previews come from. Apps load them through the Rakazo API, which fetches and caches
+ * them. `retry` means the server was too busy to look, not that the page has no metadata.
+ */
+export type LinkPreviews = {
+  /** Cache scope for the API serving these answers. */
+  endpoint?: string;
+  load(url: string): Promise<{ preview: LinkPreview | null; retry?: boolean }>;
+};
+
+export const LinkPreviewsContext = createContext<LinkPreviews | null>(null);
+
+// One answer per API endpoint and URL for the session, shared by every link on screen.
+const linkPreviews = new Map<string, LinkPreview | null>();
+
+/**
+ * The preview for a link, or null while it loads, when the surface has no preview source
+ * (mobile), or when the page has nothing worth showing. A failed request is not remembered, so
+ * a brief outage does not hide previews for the rest of the session.
+ */
+export function useLinkPreview(href: string | undefined): LinkPreview | null {
+  return useLinkPreviewState(href).preview;
+}
+
+/**
+ * The preview for a link plus whether the server has answered. `settled` with no preview means
+ * the page has no usable metadata, which is different from a preview still loading.
+ */
+export function useLinkPreviewState(href: string | undefined): {
+  preview: LinkPreview | null;
+  settled: boolean;
+} {
+  const previews = useContext(LinkPreviewsContext);
+  const key = previews && href ? `${previews.endpoint ?? ""}\n${href}` : undefined;
+  const [state, setState] = useState<{ preview: LinkPreview | null; settled: boolean }>(() =>
+    key && linkPreviews.has(key)
+      ? { preview: linkPreviews.get(key) ?? null, settled: true }
+      : { preview: null, settled: false },
+  );
+
+  useEffect(() => {
+    if (!key || !href || !previews) return;
+    if (linkPreviews.has(key)) {
+      setState({ preview: linkPreviews.get(key) ?? null, settled: true });
+      return;
+    }
+    let cancelled = false;
+    previews
+      .load(href)
+      .then((answer) => {
+        // A busy server answers null with retry; that is not a page without metadata.
+        if (answer.retry) return;
+        linkPreviews.set(key, answer.preview);
+        if (!cancelled) setState({ preview: answer.preview, settled: true });
+      })
+      .catch(() => {
+        // Transient failure: leave it uncached so a later mount can try again.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [key, href, previews]);
+
+  return state;
+}
 
 /** True while a reply streams: a half-written autolink host must not be looked up. */
 export const LinkFaviconsPausedContext = createContext(false);

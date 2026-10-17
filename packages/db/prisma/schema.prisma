@@ -717,6 +717,7 @@ model CloudAgent {
   messageId           String?
   remoteId            String?
   latestRunId         String?
+  latestAction        String?
   title               String
   status              String   @default("running")
   url                 String   @default("")

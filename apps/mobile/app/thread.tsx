@@ -3188,6 +3188,11 @@ const MessageBubble = memo(function MessageBubble({
             {statusLabel}
           </Text>
         </View>
+        {running && special.latestAction ? (
+          <Text numberOfLines={2} style={{ color: tokens.mutedForeground, fontSize: 13 }}>
+            {special.latestAction}
+          </Text>
+        ) : null}
         {prHref ? (
           <Text style={{ color: tokens.mutedForeground, marginTop: 8, fontSize: 14.5 }}>
             {t("Pull request")}

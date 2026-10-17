@@ -8,22 +8,22 @@ import {
 } from "./tool-activity-preference";
 
 describe("tool activity preference", () => {
-  it("stays off unless a saved choice turns it on", () => {
+  it("shows activity by default unless the user explicitly turns it off", () => {
     expect(normalizeToolActivityPreference("on")).toBe("on");
     expect(normalizeToolActivityPreference("ON")).toBe("on");
     expect(normalizeToolActivityPreference(" on ")).toBe("on");
     expect(normalizeToolActivityPreference("off")).toBe("off");
     expect(normalizeToolActivityPreference("OFF")).toBe("off");
-    expect(normalizeToolActivityPreference(null)).toBe("off");
-    expect(normalizeToolActivityPreference(undefined)).toBe("off");
-    expect(normalizeToolActivityPreference("")).toBe("off");
-    expect(normalizeToolActivityPreference("nonsense")).toBe("off");
+    expect(normalizeToolActivityPreference(null)).toBe("on");
+    expect(normalizeToolActivityPreference(undefined)).toBe("on");
+    expect(normalizeToolActivityPreference("")).toBe("on");
+    expect(normalizeToolActivityPreference("nonsense")).toBe("on");
   });
 
   it("resolves from an explicit stored value", () => {
     expect(resolveToolActivityPreference({ stored: "off" })).toBe("off");
     expect(resolveToolActivityPreference({ stored: "on" })).toBe("on");
-    expect(resolveToolActivityPreference({ stored: null })).toBe("off");
+    expect(resolveToolActivityPreference({ stored: null })).toBe("on");
   });
 
   it("persists through storage helpers and reads it back", () => {
@@ -41,7 +41,7 @@ describe("tool activity preference", () => {
     expect(resolveToolActivityPreference({ storage })).toBe("on");
   });
 
-  it("stays off when storage is unreadable or throws", () => {
+  it("uses the default when storage is unreadable or throws", () => {
     const throwing = {
       getItem: () => {
         throw new Error("blocked");
@@ -50,12 +50,12 @@ describe("tool activity preference", () => {
         throw new Error("blocked");
       },
     };
-    expect(resolveToolActivityPreference({ storage: throwing })).toBe("off");
-    expect(resolveToolActivityPreference({ storage: null })).toBe("off");
+    expect(resolveToolActivityPreference({ storage: throwing })).toBe("on");
+    expect(resolveToolActivityPreference({ storage: null })).toBe("on");
     expect(() => persistToolActivityPreference("off", throwing)).not.toThrow();
   });
 
-  it("stays disabled until a saved choice turns it on", () => {
-    expect(getToolActivityEnabled()).toBe(false);
+  it("enables the collapsed action summary by default", () => {
+    expect(getToolActivityEnabled()).toBe(true);
   });
 });

@@ -4814,3 +4814,27 @@ msgstr "你的名字"
 #: src/pages/Welcome.tsx
 msgid "Your team of always-on agents<0/>that you can give real work to."
 msgstr "你的一支随时在线的 Agent 团队<0/>可以交给它们真正的工作。"
+
+#: src/components/CoderPanel.tsx
+msgid "Coder"
+msgstr "编程助手"
+
+#: src/components/CoderPanel.tsx
+msgid "Stop run"
+msgstr "停止运行"
+
+#: src/components/CoderPanel.tsx
+msgid "No coder runs yet."
+msgstr "暂无编程任务。"
+
+#: src/components/CoderPanel.tsx
+msgid "Could not load coder activity."
+msgstr "无法加载编程活动。"
+
+#: src/components/CoderPanel.tsx
+msgid "Reconnecting…"
+msgstr "正在重新连接…"
+
+#: src/components/CoderPanel.tsx
+msgid "Earlier runs"
+msgstr "先前的运行"

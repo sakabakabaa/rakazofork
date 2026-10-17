@@ -201,6 +201,7 @@ function snapshotData(snapshot: CloudAgentSnapshot): Prisma.CloudAgentUpdateMany
     branch: snapshot.branch,
     prUrl: snapshot.prUrl ? (cloudAgentHttpsUrl(snapshot.prUrl) ?? "") : undefined,
     latestRunId: snapshot.latestRunId,
+    latestAction: snapshot.latestAction,
   };
 }
 

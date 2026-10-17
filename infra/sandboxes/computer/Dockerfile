@@ -94,6 +94,29 @@ RUN set -eux; \
   tar -xzf "$archive" -C /usr/local/bin --strip-components=2 "gh_${GH_VERSION}_linux_${gh_arch}/bin/gh"; \
   rm -f "$archive"; \
   gh --version
+# DSH requires Node >=22.19. Ship an exact Node LTS binary and CLI in the
+# isolated computer image so the command is on PATH for every fresh shell.
+ARG NODE_VERSION=22.23.3
+RUN set -eux; \
+  case "$TARGETARCH" in \
+    amd64) node_arch=x64; node_sha256=1084aa36196bba4c3a5e69a1ee388a6e4ff729dad09445fbcd434b28fe3c24af ;; \
+    arm64) node_arch=arm64; node_sha256=5ced2d48d1d7198739b7f86804de0171aefb6823b684b12341d3321afc3cb0b2 ;; \
+    *) echo "unsupported TARGETARCH: $TARGETARCH" >&2; exit 1 ;; \
+  esac; \
+  archive="$(mktemp)"; \
+  curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-${node_arch}.tar.gz" -o "$archive"; \
+  echo "$node_sha256  $archive" | sha256sum -c -; \
+  tar -xzf "$archive" -C /usr/local --strip-components=1; \
+  rm -f "$archive"; \
+  node --version; \
+  npm --version
+ARG DSH_VERSION=0.2.0-rc.2
+RUN set -eux; \
+  npm install --global --no-audit --no-fund "@deepseek-ai/dsh@${DSH_VERSION}"; \
+  dsh --version; \
+  mkdir -p /tmp/dsh-image-check; \
+  HOME=/tmp/dsh-image-check DSH_HOME=/tmp/dsh-image-check dsh --profile headless --help >/dev/null; \
+  rm -rf /tmp/dsh-image-check
 ENV DISPLAY=:1
 ENV HOME=/home/rakazo
 # Keep UTF-8 explicit (an empty LANG broke non-ASCII file handling in the

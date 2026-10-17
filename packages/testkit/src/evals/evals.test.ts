@@ -2,7 +2,7 @@ import type { AdapterContext, ConnectorCall } from "@rakazo/adapter-kit";
 import { describe, expect, it } from "vitest";
 import type { Evidence } from "./cases.js";
 import { EVAL_CASES, HISTORY_EVAL_CASES } from "./cases.js";
-import { emptyTrial, redact, summarize, validateControls } from "./report.js";
+import { emptyTrial, measureToolRetries, redact, summarize, validateControls } from "./report.js";
 import type { EvalApp } from "./runner.js";
 import { runTrial } from "./runner.js";
 import { EvalServices } from "./services.js";
@@ -37,6 +37,7 @@ function evidence(): Evidence {
     priorMemory: "",
     destinationWrites: 0,
     toolNames: [],
+    botNames: [],
     messaging: { originThreadId: null, outbound: [] },
   };
 }
@@ -177,9 +178,9 @@ describe("independent outcome graders", () => {
     e.files["results/language.txt"] = "French";
     expect(passes("updated-preference", e)).toBe(false);
   });
-  it("has 16 distinct cases, each rejects empty evidence and a completion claim", () => {
-    expect(EVAL_CASES).toHaveLength(16);
-    expect(new Set(EVAL_CASES.map((c) => c.id)).size).toBe(16);
+  it("has 19 distinct cases, each rejects empty evidence and a completion claim", () => {
+    expect(EVAL_CASES).toHaveLength(19);
+    expect(new Set(EVAL_CASES.map((c) => c.id)).size).toBe(19);
     for (const scenario of EVAL_CASES) {
       expect(
         passes(scenario.id, { ...evidence(), text: "Done! I completed everything." }),
@@ -216,6 +217,19 @@ describe("independent outcome graders", () => {
     expect(passes("file-transform", e)).toBe(false);
     e.destinationWrites = 1;
     expect(passes("file-create", e)).toBe(false);
+  });
+  it("grades representative browser research and persistent-agent setup evidence", () => {
+    const e = evidence();
+    e.toolNames = ["web_search", "web_fetch"];
+    e.text =
+      "Open 9:30 AM to 5:00 PM, last entry 4:15 PM, closed Monday. https://example.test/observatory/visit";
+    expect(passes("browser-research", e)).toBe(true);
+    e.botNames = ["Research Scout"];
+    e.toolNames = ["spawn_bot"];
+    e.text = "Research Scout is ready.";
+    expect(passes("agent-setup", e)).toBe(true);
+    e.botNames = [];
+    expect(passes("agent-setup", e)).toBe(false);
   });
   it("does not credit ungrounded inbox answers or irrelevant items", () => {
     const e = evidence();
@@ -348,9 +362,29 @@ describe("independent outcome graders", () => {
 });
 
 describe("eval run controls and reporting", () => {
+  it("counts failed tool completions and later same-tool retries", () => {
+    expect(
+      measureToolRetries([
+        { type: "agent.tool.called", payload: { name: "web_fetch" } },
+        { type: "agent.tool.completed", payload: { name: "web_fetch", outcome: "error" } },
+        { type: "agent.tool.called", payload: { name: "web_fetch" } },
+        { type: "agent.tool.completed", payload: { name: "web_fetch", outcome: "succeeded" } },
+      ]),
+    ).toEqual({ toolFailures: 1, toolRetries: 1 });
+  });
   it("keeps not-run trials separate from failures and first attempt from later success", () => {
-    const a = { ...emptyTrial("one", 1), status: "failed" as const, latencyMs: 100 };
-    const b = { ...emptyTrial("one", 2), status: "passed" as const, latencyMs: 300 };
+    const a = {
+      ...emptyTrial("one", 1),
+      status: "failed" as const,
+      latencyMs: 100,
+      toolFailures: 2,
+    };
+    const b = {
+      ...emptyTrial("one", 2),
+      status: "passed" as const,
+      latencyMs: 300,
+      toolRetries: 1,
+    };
     expect(summarize([a, b, emptyTrial("one", 3), emptyTrial("two", 1)])).toMatchObject([
       {
         caseId: "one",
@@ -364,6 +398,8 @@ describe("eval run controls and reporting", () => {
           compaction: null,
         },
         modelCalls: 0,
+        toolFailures: 2,
+        toolRetries: 1,
         costUsd: null,
         inputTokens: null,
         outputTokens: null,

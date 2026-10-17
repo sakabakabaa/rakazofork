@@ -318,3 +318,98 @@ a.rk-chat-link .rk-chat-link-tile > svg {
 a.rk-chat-link:hover .rk-chat-link-label {
   text-decoration-color: currentColor;
 }
+
+.rk-chat-link-preview {
+  margin: 0.65em 0;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 0.75em;
+  background: var(--muted);
+}
+
+.rk-chat-link-preview-loading {
+  min-height: 4em;
+}
+
+.rk-chat-preview-skeleton {
+  display: block;
+  height: 0.85em;
+  border-radius: 999px;
+  background: var(--border);
+  animation: rkPreviewPulse 1.2s ease-in-out infinite alternate;
+}
+
+.rk-chat-preview-skeleton-title {
+  width: min(68%, 24em);
+}
+
+.rk-chat-preview-skeleton-description {
+  width: min(92%, 34em);
+  opacity: 0.65;
+}
+
+@keyframes rkPreviewPulse {
+  to {
+    opacity: 0.4;
+  }
+}
+
+.rk-chat-markdown .rk-chat-link-preview > p {
+  margin: 0;
+  padding: 0.65em 0.8em;
+}
+
+a.rk-chat-preview {
+  display: flex;
+  color: var(--foreground);
+  text-decoration: none;
+}
+
+a.rk-chat-preview:hover {
+  background: color-mix(in srgb, var(--accent) 55%, transparent);
+}
+
+.rk-chat-preview-image {
+  width: 7.5em;
+  min-height: 5em;
+  max-height: 7em;
+  flex: 0 0 7.5em;
+  align-self: stretch;
+  object-fit: cover;
+}
+
+.rk-chat-preview-body {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  justify-content: center;
+  gap: 0.25em;
+  padding: 0.65em 0.8em;
+}
+
+.rk-chat-preview-site,
+.rk-chat-preview-description {
+  color: var(--muted-foreground);
+  font-size: 0.85em;
+}
+
+.rk-chat-preview-title {
+  overflow: hidden;
+  font-weight: 600;
+  text-overflow: ellipsis;
+}
+
+.rk-chat-preview-description {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+@media (max-width: 480px) {
+  .rk-chat-preview-image {
+    width: 5em;
+    flex-basis: 5em;
+  }
+}

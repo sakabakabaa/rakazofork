@@ -1,5 +1,5 @@
 import type { MouseEvent, ReactNode } from "react";
-import { createContext, memo, useCallback, useContext, useRef, useState } from "react";
+import { createContext, memo, useCallback, useContext, useMemo, useRef, useState } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { HastNode } from "./table-utils";
@@ -22,6 +22,7 @@ import {
   closeUnterminatedFence,
   inlineMarkdownImageSrc,
   LinkFaviconsPausedContext,
+  LinkPreviewsContext,
   linkFaviconOrigin,
   linkLabel,
   markdownLinkDisplayParts,
@@ -33,6 +34,7 @@ import {
   remoteMarkdownImage,
   sanitizeMarkdownUrl,
   useLinkFavicon,
+  useLinkPreviewState,
 } from "./markdown";
 import { useMarkdownLinkCopy } from "./markdown-link-prompt";
 import { MarkdownTable, MarkdownTableSourceContext } from "./markdown-table";
@@ -324,8 +326,44 @@ function hastText(node: MarkdownHast | undefined): string | undefined {
   return children.map((child) => child.value ?? "").join("");
 }
 
+/** Return a URL when the paragraph contains only that URL (including a GFM autolink). */
+function standaloneWebLink(node: MarkdownHast | undefined): string | undefined {
+  const parts = (node?.children ?? []).filter((child) => {
+    if (child.type === "text") return Boolean(child.value?.trim());
+    return child.type === "element";
+  });
+  if (parts.length !== 1) return undefined;
+  const only = parts[0];
+  if (!only) return undefined;
+  if (only.type === "text") {
+    const href = only.value?.trim().replace(/^<|>$/g, "");
+    return href && linkFaviconOrigin(href) ? href : undefined;
+  }
+  if (only.tagName !== "a") return undefined;
+  const href = hastString(only.properties?.href);
+  const label = hastText(only);
+  return href && label?.trim() === href && linkFaviconOrigin(href) ? href : undefined;
+}
+
 function hastHasImage(node: MarkdownHast | undefined): boolean {
   return (node?.children ?? []).some((child) => child.tagName === "img" || hastHasImage(child));
+}
+
+const StandalonePreviewUrlsContext = createContext<Set<string> | null>(null);
+
+function StandalonePreview({
+  href,
+  fallbackTitle,
+  children,
+}: {
+  href: string;
+  fallbackTitle?: string;
+  children: ReactNode;
+}) {
+  const shown = useContext(StandalonePreviewUrlsContext);
+  if (shown?.has(href)) return <>{children}</>;
+  shown?.add(href);
+  return <LinkPreviewCard href={href} fallbackTitle={fallbackTitle} showLoading />;
 }
 
 function LinkFavicon({ href }: { href: string }) {
@@ -351,6 +389,173 @@ function LinkFavicon({ href }: { href: string }) {
         <GlobeIcon />
       )}
     </span>
+  );
+}
+
+/**
+ * A link's page metadata as a card, drawn under the link. The card is itself the link, so the
+ * whole surface is clickable and goes through the same external-link confirmation.
+ */
+function LinkPreviewCard({
+  href,
+  fallbackTitle,
+  showLoading = false,
+}: {
+  href: string;
+  fallbackTitle?: string;
+  showLoading?: boolean;
+}) {
+  // A reply still streaming may hold a half-written host; wait until it settles, like favicons.
+  const paused = useContext(LinkFaviconsPausedContext);
+  const { preview: found, settled } = useLinkPreviewState(paused ? undefined : href);
+  const previews = useContext(LinkPreviewsContext);
+  const loadRemoteImages = useContext(RemoteImagesContext);
+  // Keep a visible preview footprint while metadata is loading, rather than leaving a bare URL.
+  if (!found && !settled && previews && showLoading) {
+    return (
+      <div className="rk-chat-link-preview rk-chat-link-preview-loading" role="status">
+        <span className="rk-chat-preview-body">
+          <span className="rk-chat-preview-site">{new URL(href).hostname}</span>
+          <span className="rk-chat-preview-skeleton rk-chat-preview-skeleton-title" />
+          <span className="rk-chat-preview-skeleton rk-chat-preview-skeleton-description" />
+        </span>
+      </div>
+    );
+  }
+  // If a site blocks metadata, keep the card useful without repeating a long raw URL.
+  const preview =
+    found ?? {
+      url: href,
+      title: readableFallbackTitle(href, fallbackTitle),
+      siteName: new URL(href).hostname,
+    };
+  return (
+    <div className="rk-chat-link-preview">
+      <ConfirmableAnchor href={preview.url} className="rk-chat-preview">
+        {/* The remote image loads only for a reader who already opted into remote images. */}
+        {preview.imageUrl && loadRemoteImages ? <RemotePreviewImage src={preview.imageUrl} /> : null}
+        <span className="rk-chat-preview-body">
+          <span className="rk-chat-preview-site">
+            {preview.siteName ?? linkFaviconOrigin(preview.url) ?? ""}
+          </span>
+          <span className="rk-chat-preview-title">{preview.title}</span>
+          {preview.description ? (
+            <span className="rk-chat-preview-description">{preview.description}</span>
+          ) : null}
+        </span>
+      </ConfirmableAnchor>
+    </div>
+  );
+}
+
+function RemotePreviewImage({ src }: { src: string }) {
+  const [failed, setFailed] = useState(false);
+  if (failed) return null;
+  return (
+    <img
+      className="rk-chat-preview-image"
+      src={src}
+      alt=""
+      loading="lazy"
+      decoding="async"
+      referrerPolicy="no-referrer"
+      onLoad={(event) => {
+        // Ignore tracking pixels and other unusably small images returned as og:image.
+        const image = event.currentTarget;
+        if (image.naturalWidth <= 1 || image.naturalHeight <= 1) setFailed(true);
+      }}
+      onError={() => setFailed(true)}
+    />
+  );
+}
+
+function readableFallbackTitle(href: string, label?: string): string {
+  const cleanLabel = label?.trim();
+  if (cleanLabel && cleanLabel !== href) return cleanLabel;
+  const url = new URL(href);
+  const queryLabel = url.searchParams.get("q") ?? url.searchParams.get("query");
+  if (queryLabel?.trim()) return readablePath(queryLabel);
+  const slug = url.pathname.split("/").filter(Boolean).at(-1);
+  return slug ? readablePath(decodeURIComponent(slug)) : "Open website";
+}
+
+function readablePath(value: string): string {
+  const readable = value.replace(/[-_]+/g, " ").replace(/\s+/g, " ").trim();
+  return readable.length > 88 ? `${readable.slice(0, 85).trimEnd()}…` : readable || "Open website";
+}
+
+/** How many cards one message may stack. Each card is a preview request, so this bounds the work. */
+const MAX_LINK_PREVIEWS = 5;
+
+/**
+ * Every web link in a message, in order of first appearance, capped at `MAX_LINK_PREVIEWS`.
+ *
+ * Code is skipped, since a URL in code is text to copy, not a link to open. A bare domain is
+ * never a link here, for the same reason as `linkifyExplicitUrls`: fuzzy matching would also
+ * pick up file names like `setup.py`.
+ */
+function webLinksIn(text: string): Array<{ href: string; label?: string }> {
+  const prose = text
+    .replace(/```[\s\S]*?(```|$)/g, " ")
+    .replace(/`[^`\n]*`/g, " ")
+    .replace(/\[!\[[^\]]*\]\([^)]*\)\]\([^)]*\)/g, " ");
+  const found = new Map<string, { href: string; label?: string }>();
+  const add = (candidate: string, label?: string) => {
+    const href = candidate.replace(/[.,;:!?]+$/, "");
+    if (!linkFaviconOrigin(href)) return;
+    const existing = found.get(href);
+    if (existing) {
+      if (!existing.label && label && label.trim() !== href) existing.label = label.trim();
+      return;
+    }
+    if (found.size < MAX_LINK_PREVIEWS) {
+      found.set(href, { href, ...(label?.trim() && label.trim() !== href ? { label: label.trim() } : {}) });
+    }
+  };
+  // The visible Markdown label may be descriptive; previews use its actual destination.
+  for (const match of prose.matchAll(/\[([^\]]*)\]\((?:<([^>]+)>|([^\s)]+))(?:\s+["'][^"']*["'])?\)/g)) {
+    const href = match[2] ?? match[3];
+    if (href) add(href, match[1]);
+  }
+  for (const match of prose.matchAll(/https?:\/\/[^\s<>()[\]"'`]+/g)) {
+    add(match[0]);
+    if (found.size === MAX_LINK_PREVIEWS) break;
+  }
+  return [...found.values()];
+}
+
+/**
+ * Bare URL paragraphs are rendered as cards in-place. Exclude those same URLs from the fallback
+ * stack used for links embedded in prose, so a message never shows the same preview twice.
+ */
+function standaloneWebLinksIn(text: string): Set<string> {
+  const prose = text.replace(/```[\s\S]*?(```|$)/g, " ").replace(/`[^`\n]*`/g, " ");
+  const hrefs = new Set<string>();
+  for (const line of prose.split("\n")) {
+    const content = line.trim().replace(/^(?:(?:[-+*]|\d+[.)])\s+)/, "");
+    const match = content.match(
+      /^(?:<([^<>]+)>|\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)|(https?:\/\/\S+))$/,
+    );
+    if (!match) continue;
+    const href = (match[1] ?? match[3] ?? match[4] ?? "").replace(/[.,;:!?]+$/, "");
+    const label = match[2];
+    if (linkFaviconOrigin(href) && (label === undefined || label === href)) hrefs.add(href);
+  }
+  return hrefs;
+}
+
+/** Cards for every web link in a message, drawn after its body rather than inside it. */
+function LinkPreviewStack({ text }: { text: string }) {
+  const hrefs = useMemo(() => {
+    const standalone = standaloneWebLinksIn(text);
+    return webLinksIn(text).filter(({ href }) => !standalone.has(href));
+  }, [text]);
+  return (
+    <>
+      {hrefs.map(({ href, label }) => (
+        <LinkPreviewCard key={href} href={href} fallbackTitle={label} />
+      ))}
+    </>
   );
 }
 
@@ -401,6 +606,26 @@ function MarkdownAnchor({
 
 const components: Components = {
   a: MarkdownAnchor,
+  p({ node, children, ...props }) {
+    const href = standaloneWebLink(node as MarkdownHast | undefined);
+    if (href) return <StandalonePreview href={href} fallbackTitle={hastText(node as MarkdownHast | undefined)}>{children}</StandalonePreview>;
+    return <p {...props}>{children}</p>;
+  },
+  li({ node, children, ...props }) {
+    const href = standaloneWebLink(node as MarkdownHast | undefined);
+    if (href)
+      return (
+        <li {...props}>
+        <StandalonePreview
+          href={href}
+          fallbackTitle={hastText(node as MarkdownHast | undefined)}
+        >
+          {children}
+        </StandalonePreview>
+        </li>
+      );
+    return <li {...props}>{children}</li>;
+  },
   img({ node: _node, src, alt, title }) {
     return (
       <MarkdownImage src={typeof src === "string" ? src : undefined} alt={alt} title={title} />
@@ -420,9 +645,10 @@ const components: Components = {
 
 export function LinkifiedText({ children }: { children: string }) {
   const { request, dialog } = useExternalLinkConfirm();
+  const parts = plainTextLinkParts(children);
   return (
     <ConfirmLinkContext.Provider value={request}>
-      {plainTextLinkParts(children).map((part, index) =>
+      {parts.map((part, index) =>
         part.type === "text" ? (
           part.value
         ) : linkFaviconOrigin(part.href) ? (
@@ -435,6 +661,7 @@ export function LinkifiedText({ children }: { children: string }) {
           </ConfirmableAnchor>
         ),
       )}
+      <LinkPreviewStack text={children} />
       {dialog}
     </ConfirmLinkContext.Provider>
   );
@@ -445,6 +672,7 @@ export const ChatMarkdown = memo(function ChatMarkdown({
   streaming = false,
 }: ChatMarkdownProps) {
   const { request, dialog } = useExternalLinkConfirm();
+  const [standalonePreviewUrls] = useState(() => new Set<string>());
   const source = streaming ? closeUnterminatedFence(children) : children;
 
   return (
@@ -453,20 +681,23 @@ export const ChatMarkdown = memo(function ChatMarkdown({
         className={streaming ? "rk-chat-markdown rk-chat-markdown-streaming" : "rk-chat-markdown"}
       >
         <LinkFaviconsPausedContext.Provider value={streaming}>
-          <MarkdownTableSourceContext.Provider value={source}>
-            <ReactMarkdown
-              components={components}
-              remarkPlugins={[remarkGfm]}
-              rehypePlugins={[preserveSkippedTableText]}
-              skipHtml
-              // MarkdownImage decides what an image source may do, so it receives the source as written.
-              urlTransform={(url, key) =>
-                key === "src" ? url : (sanitizeMarkdownUrl(url, true) ?? "")
-              }
-            >
-              {source}
-            </ReactMarkdown>
-          </MarkdownTableSourceContext.Provider>
+          <StandalonePreviewUrlsContext.Provider value={standalonePreviewUrls}>
+            <MarkdownTableSourceContext.Provider value={source}>
+              <ReactMarkdown
+                components={components}
+                remarkPlugins={[remarkGfm]}
+                rehypePlugins={[preserveSkippedTableText]}
+                skipHtml
+                // MarkdownImage decides what an image source may do, so it receives the source as written.
+                urlTransform={(url, key) =>
+                  key === "src" ? url : (sanitizeMarkdownUrl(url, true) ?? "")
+                }
+              >
+                {source}
+              </ReactMarkdown>
+            </MarkdownTableSourceContext.Provider>
+            <LinkPreviewStack text={source} />
+          </StandalonePreviewUrlsContext.Provider>
         </LinkFaviconsPausedContext.Provider>
         {streaming ? <span aria-hidden="true" className="rk-chat-markdown-cursor" /> : null}
       </div>
@@ -475,7 +706,7 @@ export const ChatMarkdown = memo(function ChatMarkdown({
   );
 });
 
-export type { ChatMarkdownProps, LinkFavicons } from "./markdown";
-export { LinkFaviconsContext, RemoteImagesContext } from "./markdown";
+export type { ChatMarkdownProps, LinkFavicons, LinkPreview, LinkPreviews } from "./markdown";
+export { LinkFaviconsContext, LinkPreviewsContext, RemoteImagesContext } from "./markdown";
 
 export { MarkdownLinkPromptProvider } from "./markdown-link-prompt";

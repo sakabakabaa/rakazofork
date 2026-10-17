@@ -200,6 +200,7 @@ export const MessageBlock = z.discriminatedUnion("kind", [
     branch: z.string().optional(),
     prUrl: z.string().optional(),
     latestRunId: z.string().optional(),
+    latestAction: z.string().max(240).optional(),
   }),
   z.object({
     kind: z.literal("skill_draft"),
@@ -300,6 +301,25 @@ export const ComputerCommandKind = z.enum([
   "launch_app",
 ]);
 export type ComputerCommandKind = z.infer<typeof ComputerCommandKind>;
+export const CoderActivitySchema = z.object({
+  provider: z.literal("dsh"),
+  task: z.string(),
+  startedAt: z.string(),
+  finishedAt: z.string().optional(),
+  phase: z.string(),
+  text: z.string(),
+  actions: z.array(
+    z.object({
+      id: z.string(),
+      tool: z.string(),
+      label: z.string(),
+      status: z.enum(["running", "done", "failed"]),
+      output: z.string(),
+    }),
+  ),
+});
+export type CoderActivity = z.infer<typeof CoderActivitySchema>;
+
 export const ComputerCommandSchema = z.object({
   executionId: z.string(),
   kind: ComputerCommandKind,
@@ -308,10 +328,38 @@ export const ComputerCommandSchema = z.object({
   status: z.enum(["running", "done"]),
   exitCode: z.number().int().nullable(),
   output: z.string(),
+  coder: CoderActivitySchema.optional(),
   /** Size written by write_file. */
   bytes: z.number().int().nonnegative().optional(),
 });
 export type ComputerCommand = z.infer<typeof ComputerCommandSchema>;
+
+/** Recover terminal CLI state even when cancellation aborts its final output callback. */
+export function settleCoderCommand<T extends ComputerCommand>(
+  command: T,
+  runStatus: string | undefined,
+  finishedAt: string,
+): T {
+  if (
+    !command.coder ||
+    command.status === "done" ||
+    !["cancelled", "failed", "completed"].includes(runStatus ?? "")
+  )
+    return command;
+  return {
+    ...command,
+    status: "done",
+    exitCode: runStatus === "cancelled" ? 130 : 1,
+    coder: {
+      ...command.coder,
+      phase: runStatus === "cancelled" ? "Stopped" : "Interrupted",
+      finishedAt,
+      actions: command.coder.actions.map((action) =>
+        action.status === "running" ? { ...action, status: "failed" as const } : action,
+      ),
+    },
+  };
+}
 
 /**
  * Collapse running/done events into one entry per command, in start order. A finished

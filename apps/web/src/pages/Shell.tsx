@@ -138,6 +138,7 @@ import { ArtifactFileCard } from "../components/ArtifactFileCard";
 import { AskCard } from "../components/AskCard";
 import { ActiveBotGlyph, CollaborationMarker } from "../components/ai/CollaborationMarker";
 import { CloudAgentCard } from "../components/CloudAgentCard";
+import { CoderPanel } from "../components/CoderPanel";
 import { ComputerMaintenanceActions } from "../components/ComputerMaintenanceActions";
 import {
   ComputersUnavailableHint,
@@ -148,9 +149,9 @@ import { CallCard } from "../components/call/CallCard";
 import { VoiceChatCard } from "../components/call/VoiceChatCard";
 import { ComputerWorkspace } from "../components/computer/ComputerWorkspace";
 import { lazyOverlay } from "../components/ErrorBoundary";
+import { LongReplyMarkdown } from "../components/LongReplyMarkdown";
 import { MessageHoverMetadata } from "../components/MessageHoverMetadata";
 import {
-  LIVE_TOOL_STEP_WINDOW,
   StandaloneToolActivity,
   ToolActivityDisclosure,
   ToolOnlyNarration,
@@ -225,12 +226,13 @@ import {
   userHoldsComputerControl,
 } from "../lib/thread-events";
 import { getToolActivityEnabled, subscribeToolActivity } from "../lib/tool-activity-preference";
+import type { RunToolActivity } from "../lib/tool-activity-view";
 import {
   isToolOnlyNarration,
   messageHasVisibleBlocks,
   renderableMessageBlocks,
   shouldRenderToolCard,
-  toolStepCount,
+  toolActivityByRun,
 } from "../lib/tool-activity-view";
 import {
   transcriptCanSnapAfterFrame,
@@ -3823,6 +3825,7 @@ export function ShellPage() {
                 <p className="mt-2 truncate text-[13.5px] text-muted-foreground" dir="auto">
                   {t`${active.name}'s screen`}
                 </p>
+                <CoderPanel key={active.id} botId={active.id} onStop={stopRun} />
                 <RoutineListHeader
                   onCreate={() => {
                     setRoutineDraft(emptyRoutineDraft());
@@ -4805,9 +4808,13 @@ const Transcript = memo(function Transcript({
     [messages],
   );
   const reactionView = useMemo(() => projectMessageReactions(messages), [messages]);
+  const runToolActivity = useMemo(
+    () => toolActivityByRun(reactionView.visibleMessages),
+    [reactionView.visibleMessages],
+  );
   const separatorIds = timeSeparatorIds(
     reactionView.visibleMessages.filter((message) =>
-      messageHasVisibleBlocks(message.blocks, showToolActivity),
+      messageHasVisibleBlocks(message.blocks, showToolActivity, message.id.startsWith("progress:")),
     ),
   );
   const workingBotName = workingBots.length === 1 ? workingBots[0]?.name : undefined;
@@ -5080,7 +5087,17 @@ const Transcript = memo(function Transcript({
             );
           }
           const message = item.message;
-          if (!messageHasVisibleBlocks(message.blocks, showToolActivity)) return null;
+          const messageToolActivity = message.runId
+            ? runToolActivity.get(message.runId)
+            : undefined;
+          if (
+            !messageHasVisibleBlocks(
+              message.blocks,
+              showToolActivity,
+              message.id.startsWith("progress:"),
+            )
+          )
+            return null;
           const peerReceipt = isPeerReceiptBlocks(message.blocks);
           const messageReactions = reactionView.reactions.get(message.id);
           return (
@@ -5141,6 +5158,7 @@ const Transcript = memo(function Transcript({
                       onSpeak={() => onSpeak(message)}
                       onOpenComputer={onOpenComputer}
                       showToolActivity={showToolActivity}
+                      runToolActivity={messageToolActivity}
                     />
                     {peerReceipt ? null : (
                       <MessageHoverActions
@@ -6490,6 +6508,7 @@ const MessageView = memo(function MessageView({
   onSpeak,
   onOpenComputer,
   showToolActivity,
+  runToolActivity,
 }: {
   artifactTarget: ArtifactTarget;
   canAnswer: boolean;
@@ -6510,6 +6529,7 @@ const MessageView = memo(function MessageView({
   onSpeak: () => void;
   onOpenComputer: (botId?: string) => void;
   showToolActivity: boolean;
+  runToolActivity?: RunToolActivity;
 }) {
   const { t } = useLingui();
   const isNarration =
@@ -6520,7 +6540,45 @@ const MessageView = memo(function MessageView({
     );
   const isLive = message.id.startsWith("progress:");
   const quoteMessageId = message.id.includes(":") ? undefined : message.id;
-  const visibleNarrationBlocks = renderableMessageBlocks(message.blocks, showToolActivity);
+  const ownsRunToolActivity = !runToolActivity || runToolActivity.latestMessageId === message.id;
+  const visibleNarrationBlocks = renderableMessageBlocks(
+    message.blocks,
+    showToolActivity,
+    isLive,
+  ).filter((block) => ownsRunToolActivity || !isToolActivityBlock(block));
+  const toolStepBlocks = showToolActivity
+    ? message.blocks.filter(
+        (block): block is Extract<ThreadMessage["blocks"][number], { kind: "steps" }> =>
+          block.kind === "steps",
+      )
+    : [];
+  const toolSteps =
+    ownsRunToolActivity && runToolActivity
+      ? runToolActivity.steps
+      : toolStepBlocks.flatMap((block) => block.steps);
+  const liveToolAction = isLive
+    ? message.blocks.findLast(
+        (block) => block.kind === "progress" && block.activity === true && block.text.trim(),
+      )
+    : undefined;
+  const visibleToolSteps =
+    liveToolAction?.kind === "progress"
+      ? [...toolSteps, { label: liveToolAction.text, count: 1 }]
+      : toolSteps;
+  const toolDurationMs =
+    ownsRunToolActivity && runToolActivity
+      ? runToolActivity.durationMs
+      : toolStepBlocks.reduce((total, block) => total + (block.durationMs ?? 0), 0);
+  const lastToolBlockIndex = message.blocks.reduce(
+    (last, block, index) =>
+      ownsRunToolActivity && shouldRenderToolCard(block, showToolActivity, isLive) ? index : last,
+    -1,
+  );
+  const lastVisibleNarrationToolBlockIndex = visibleNarrationBlocks.reduce(
+    (last, block, index) =>
+      ownsRunToolActivity && shouldRenderToolCard(block, showToolActivity, isLive) ? index : last,
+    -1,
+  );
 
   const replyBotId = message.replyPreview?.botId ?? replyParent?.botId;
   const speakerBot = message.botId ? peerBot?.(message.botId) : undefined;
@@ -6561,7 +6619,7 @@ const MessageView = memo(function MessageView({
   );
   if (isNarration) {
     if (visibleNarrationBlocks.length === 0) return null;
-    if (isToolOnlyNarration(message.blocks, showToolActivity)) {
+    if (isToolOnlyNarration(message.blocks, showToolActivity, isLive)) {
       return (
         <>
           {messageContext}
@@ -6579,29 +6637,33 @@ const MessageView = memo(function MessageView({
             dir="auto"
           >
             {visibleNarrationBlocks.map((block, i) => {
-              if (block.kind === "steps") {
+              if (shouldRenderToolCard(block, showToolActivity, isLive)) {
+                if (i !== lastVisibleNarrationToolBlockIndex) return null;
+                const action =
+                  liveToolAction?.kind === "progress" ? liveToolAction.text : undefined;
                 return (
                   <ToolActivityDisclosure
                     key={i}
                     live={isLive}
-                    stepCount={toolStepCount(block.steps)}
-                    durationMs={block.durationMs}
+                    latestAction={action ?? visibleToolSteps.at(-1)?.label}
+                    durationMs={toolDurationMs || undefined}
                   >
                     <ToolSteps
-                      steps={block.steps}
-                      currentIndex={isLive ? block.steps.length - 1 : undefined}
-                      limit={isLive ? LIVE_TOOL_STEP_WINDOW : undefined}
+                      steps={visibleToolSteps}
+                      currentIndex={liveToolAction ? visibleToolSteps.length - 1 : undefined}
                     />
                   </ToolActivityDisclosure>
                 );
               }
-              if (block.kind === "text" || block.kind === "progress") {
+              if (block.kind === "text" || (block.kind === "progress" && !block.activity)) {
                 return (
                   <div
                     key={i}
                     data-quote-message-id={block.kind === "text" ? quoteMessageId : undefined}
                   >
-                    <ChatMarkdown streaming={block.kind === "progress"}>{block.text}</ChatMarkdown>
+                    <LongReplyMarkdown streaming={block.kind === "progress"}>
+                      {block.text}
+                    </LongReplyMarkdown>
                   </div>
                 );
               }
@@ -6626,14 +6688,20 @@ const MessageView = memo(function MessageView({
     <>
       {messageContext}
       {message.blocks.map((block, i) => {
-        if (block.kind === "steps" && shouldRenderToolCard(block, showToolActivity)) {
+        if (shouldRenderToolCard(block, showToolActivity, isLive)) {
+          if (i !== lastToolBlockIndex) return null;
           return (
             <StandaloneToolActivity
               key={i}
               live={isLive}
-              steps={block.steps}
-              stepCount={toolStepCount(block.steps)}
-              durationMs={block.durationMs}
+              active={liveToolAction?.kind === "progress"}
+              steps={visibleToolSteps}
+              latestAction={
+                liveToolAction?.kind === "progress"
+                  ? liveToolAction.text
+                  : visibleToolSteps.at(-1)?.label
+              }
+              durationMs={toolDurationMs || undefined}
             />
           );
         }
@@ -6704,7 +6772,7 @@ const MessageView = memo(function MessageView({
                 className="max-w-full rounded-[20px] bg-muted px-[18px] py-3 text-[15.5px] leading-[1.5] text-foreground/90"
                 dir="auto"
               >
-                <ChatMarkdown streaming>{block.text}</ChatMarkdown>
+                <LongReplyMarkdown streaming>{block.text}</LongReplyMarkdown>
               </div>
             </div>
           );
@@ -6739,9 +6807,9 @@ const MessageView = memo(function MessageView({
               <div className="mt-2 text-[13.5px] text-muted-foreground">{block.task}</div>
               {block.progress || block.result ? (
                 <div className="mt-2.5 text-[14.5px] leading-[1.5] text-foreground/75">
-                  <ChatMarkdown streaming={running}>
+                  <LongReplyMarkdown streaming={running}>
                     {block.result || block.progress || ""}
-                  </ChatMarkdown>
+                  </LongReplyMarkdown>
                 </div>
               ) : null}
             </div>
@@ -6874,7 +6942,7 @@ const MessageView = memo(function MessageView({
                 dir="auto"
               >
                 <div data-quote-message-id={quoteMessageId}>
-                  <ChatMarkdown>{block.text}</ChatMarkdown>
+                  <LongReplyMarkdown>{block.text}</LongReplyMarkdown>
                 </div>
                 {voiceReady ? (
                   <button

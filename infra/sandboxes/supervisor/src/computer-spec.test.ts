@@ -246,6 +246,19 @@ describe("graphical computer spec", () => {
     expect(dockerfile).toMatch(/gh --version/);
   });
 
+  it("ships a checksum-pinned Node runtime and DSH CLI", () => {
+    const root = path.resolve(import.meta.dirname, "../../computer");
+    const dockerfile = readFileSync(path.join(root, "Dockerfile"), "utf8");
+    expect(dockerfile).toMatch(/ARG NODE_VERSION=22\.23\.3/);
+    expect(dockerfile).toMatch(/amd64\) node_arch=x64; node_sha256=[0-9a-f]{64}/);
+    expect(dockerfile).toMatch(/arm64\) node_arch=arm64; node_sha256=[0-9a-f]{64}/);
+    expect(dockerfile).toMatch(/nodejs\.org\/dist\/v\$\{NODE_VERSION\}/);
+    expect(dockerfile).toMatch(/sha256sum -c/);
+    expect(dockerfile).toMatch(/ARG DSH_VERSION=0\.2\.0-rc\.2/);
+    expect(dockerfile).toMatch(/npm install --global[^\n]*@deepseek-ai\/dsh/);
+    expect(dockerfile).toMatch(/dsh --profile headless --help/);
+  });
+
   it("ships document text extractors", () => {
     const root = path.resolve(import.meta.dirname, "../../computer");
     const dockerfile = readFileSync(path.join(root, "Dockerfile"), "utf8");

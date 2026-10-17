@@ -587,29 +587,47 @@ def act(client: CdpClient, session_id: str, actions: list[dict[str, Any]]) -> di
         ):
             raise RuntimeError("An origin applies only to fill")
     ensure_helpers(client, session_id)
-    completed = 0
-    uncertain = False
+    # One Runtime.evaluate per batch replaces two CDP round trips per action
+    # (preflight + mutation) and a separate snapshot evaluation. Keep the
+    # preflight adjacent to each mutation so stale refs cannot be replayed.
+    batch = json.dumps(actions, separators=(",", ":"))
+    expression = f"""(() => {{
+      const actions = {batch};
+      let completed = 0;
+      let uncertain = false;
+      try {{
+        for (const step of actions) {{
+          if (!window.__rakazoPageBrowser.resolve(step.ref)) {{
+            return {{ ok: false, completed, uncertain: false,
+              error: "Stale element ref. Take a fresh snapshot." }};
+          }}
+          uncertain = true;
+          const result = step.kind === "click"
+            ? window.__rakazoPageBrowser.click(step.ref)
+            : step.kind === "fill"
+              ? window.__rakazoPageBrowser.fill(step.ref, step.text, step.origin)
+              : window.__rakazoPageBrowser.type(step.ref, step.text);
+          if (!result || typeof result !== "object") throw new Error("Action response unavailable");
+          completed += 1;
+          uncertain = false;
+        }}
+        return {{ ok: true, completed, ...window.__rakazoPageBrowser.snapshot() }};
+      }} catch (error) {{
+        return {{ ok: false, completed, uncertain,
+          error: String(error?.message || error) }};
+      }}
+    }})()"""
     try:
-        for step in actions:
-            kind, ref = step["kind"], step["ref"]
-            # Preflight catches stale refs before a mutation is dispatched.
-            if not eval_json(client, session_id, f"Boolean(window.__rakazoPageBrowser.resolve({json.dumps(ref)}))"):
-                raise RuntimeError("Stale element ref. Take a fresh snapshot.")
-            arguments = json.dumps(ref)
-            if kind != "click":
-                arguments += ", " + json.dumps(step["text"])
-            if step.get("origin"):
-                arguments += ", " + json.dumps(step["origin"])
-            uncertain = True
-            data = eval_json(client, session_id, f"window.__rakazoPageBrowser.{kind}({arguments})")
-            if not isinstance(data, dict):
-                raise RuntimeError("Action response unavailable")
-            completed += 1
-            uncertain = False
-        snap = snapshot(client, session_id)
-        return {**snap, "completed": completed}
+        result = eval_json(client, session_id, expression)
+        if not isinstance(result, dict):
+            raise RuntimeError("Action response unavailable")
+        if not result.get("ok"):
+            return {**result, "fallback": "computer_act"}
+        return result
     except Exception as exc:
-        return {"ok": False, "completed": completed, "uncertain": uncertain,
+        # A lost response after dispatch could mean the final click navigated.
+        # Do not encourage replaying a potentially completed action sequence.
+        return {"ok": False, "completed": 0, "uncertain": True,
                 "error": str(exc), "fallback": "computer_act"}
 
 

@@ -4814,3 +4814,27 @@ msgstr "Tu nombre"
 #: src/pages/Welcome.tsx
 msgid "Your team of always-on agents<0/>that you can give real work to."
 msgstr "Tu equipo de agentes siempre activos<0/>a los que puedes dar trabajo real."
+
+#: src/components/CoderPanel.tsx
+msgid "Coder"
+msgstr "Asistente de código"
+
+#: src/components/CoderPanel.tsx
+msgid "Stop run"
+msgstr "Detener ejecución"
+
+#: src/components/CoderPanel.tsx
+msgid "No coder runs yet."
+msgstr "Aún no hay ejecuciones."
+
+#: src/components/CoderPanel.tsx
+msgid "Could not load coder activity."
+msgstr "No se pudo cargar la actividad."
+
+#: src/components/CoderPanel.tsx
+msgid "Reconnecting…"
+msgstr "Reconectando…"
+
+#: src/components/CoderPanel.tsx
+msgid "Earlier runs"
+msgstr "Ejecuciones anteriores"

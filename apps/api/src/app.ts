@@ -11,6 +11,7 @@ import type {
   RealtimeFanout,
   SandboxProvider,
   TransactionalEmailProvider,
+  WebProvider,
 } from "@rakazo/adapter-kit";
 import type {
   ComposioProvider,
@@ -168,6 +169,7 @@ export async function createApp(
     logger?: Logger;
     runtime?: AgentRuntime;
     contextStrategy?: AgentContextStrategy;
+    web?: WebProvider;
   } = {},
 ): Promise<AppHandles> {
   const {
@@ -183,6 +185,7 @@ export async function createApp(
     logger: loggerOverride,
     runtime: runtimeOverride,
     contextStrategy,
+    web: webOverride,
     ...envOverrides
   } = overrides;
   const env = { ...loadEnv(process.env), ...envOverrides };
@@ -493,7 +496,7 @@ export async function createApp(
     onTicketChange: ticketChanges,
     ticketBoardEnabled,
     messaging: messaging ? createMessagingContextLoader(prisma) : undefined,
-    web: createWebProvider(),
+    web: webOverride ?? createWebProvider(),
     cloudAgent,
     shutdownSignal: shutdown.signal,
   });
@@ -557,6 +560,10 @@ export async function createApp(
       providers: messaging?.platforms().map((platform) => platform.provider) ?? [],
       openSignup: env.messagingOpenSignup,
     },
+    whatsappWeb:
+      env.whatsappApiUrl && env.whatsappAccessToken
+        ? { url: env.whatsappApiUrl, token: env.whatsappAccessToken }
+        : undefined,
     env: {
       ticketBoardEnabled,
       agentRuntime: env.agentRuntime,

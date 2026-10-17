@@ -5,37 +5,17 @@ import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 
-// The macro compiles away in the app build; tests run the source, so expand the
-// plural by hand to assert the singular vs plural English forms.
 vi.mock("@lingui/react/macro", () => ({
   Plural: ({ value, one, other }: { value: number; one: string; other: string }) =>
     (value === 1 ? one : other).replace("#", String(value)),
 }));
 
 import {
-  LIVE_TOOL_STEP_WINDOW,
   StandaloneToolActivity,
   ToolActivityDisclosure,
   ToolOnlyNarration,
   ToolSteps,
 } from "./ToolActivityDisclosure";
-
-function markup(props: {
-  live: boolean;
-  stepCount: number;
-  durationMs?: number;
-  steps?: Array<{ label: string; count: number }>;
-}) {
-  return renderToStaticMarkup(
-    <ToolActivityDisclosure
-      live={props.live}
-      stepCount={props.stepCount}
-      durationMs={props.durationMs}
-    >
-      <ToolSteps steps={props.steps ?? [{ label: "Shell", count: props.stepCount }]} />
-    </ToolActivityDisclosure>,
-  );
-}
 
 function stepsOf(n: number) {
   return Array.from({ length: n }, (_, i) => ({ label: `step-${i}`, count: 1 }));
@@ -49,7 +29,7 @@ function mountCard() {
   const render = (live: boolean, stepCount = 2) =>
     flushSync(() =>
       root.render(
-        <ToolActivityDisclosure live={live} stepCount={stepCount}>
+        <ToolActivityDisclosure live={live} latestAction={`step-${stepCount - 1}`}>
           <ToolSteps steps={stepsOf(stepCount)} />
         </ToolActivityDisclosure>,
       ),
@@ -60,155 +40,188 @@ function mountCard() {
 }
 
 describe("ToolActivityDisclosure", () => {
-  it("labels a finished card with the tool count and duration", () => {
-    const html = markup({ live: false, stepCount: 2, durationMs: 12000 });
-    expect(html).toContain("Done · 2 tools · 12s");
-  });
-
-  it("uses the singular for one tool", () => {
-    expect(markup({ live: false, stepCount: 1, durationMs: 850 })).toContain(
-      "Done · 1 tool · 850ms",
+  it("shows only the latest action and duration on a collapsed line", () => {
+    const html = renderToStaticMarkup(
+      <ToolActivityDisclosure live={false} latestAction="Open page" durationMs={12_000}>
+        <ToolSteps
+          steps={[
+            { label: "Web search", count: 1 },
+            { label: "Open page", count: 1 },
+          ]}
+        />
+      </ToolActivityDisclosure>,
     );
-    expect(markup({ live: true, stepCount: 1 })).toContain("Working… · 1 tool");
-  });
-
-  it("omits the duration when it is not usable", () => {
-    const html = markup({ live: false, stepCount: 3 });
-    expect(html).toContain("Done · 3 tools");
-    expect(html).not.toContain("Done · 3 tools ·");
-  });
-
-  it("shows the live label while working", () => {
-    const html = markup({ live: true, stepCount: 2 });
-    expect(html).toContain("Working… · 2 tools");
-    expect(html).toContain('data-live="true"');
-  });
-
-  it("starts open while working", () => {
-    expect(markup({ live: true, stepCount: 2 })).toMatch(OPEN_DETAILS);
-  });
-
-  it("is collapsed once done and expands to the tool rows", () => {
-    const html = markup({ live: false, stepCount: 2 });
-    expect(html).toContain("<details");
+    expect(html).toContain("Open page");
+    expect(html).toContain("· Done · 12s");
     expect(html).not.toMatch(OPEN_DETAILS);
-    expect(html).toContain("Shell ×2");
+    expect(html.match(/<summary/g)).toHaveLength(1);
   });
 
-  it("folds when the run finishes", () => {
+  it("keeps the details collapsed while live and shows the latest action status", () => {
+    const html = renderToStaticMarkup(
+      <ToolActivityDisclosure live latestAction="Web search">
+        <ToolSteps steps={[{ label: "Web search", count: 1 }]} />
+      </ToolActivityDisclosure>,
+    );
+    expect(html).toContain("Web search");
+    expect(html).toContain("· Working");
+    expect(html).toContain('data-live="true"');
+    expect(html).not.toMatch(OPEN_DETAILS);
+  });
+
+  it("omits an unusable duration", () => {
+    const html = renderToStaticMarkup(
+      <ToolActivityDisclosure live={false} latestAction="Read file">
+        <ToolSteps steps={[{ label: "Read file", count: 1 }]} />
+      </ToolActivityDisclosure>,
+    );
+    expect(html).toContain("· Done");
+    expect(html).not.toContain("· Done ·");
+  });
+
+  it("preserves the user's expansion state as a run updates and completes", () => {
     const card = mountCard();
     card.render(true);
-    expect(card.details()?.open).toBe(true);
-
-    card.render(false);
-    expect(card.details()?.open).toBe(false);
-    expect(card.summary()?.textContent).toContain("Done · 2 tools");
-    card.unmount();
-  });
-
-  it("keeps a manual collapse while more tools arrive in the same run", () => {
-    const card = mountCard();
-    card.render(true, 2);
+    expect(card.details()?.open).toBeFalsy();
     card.summary()?.click();
-    expect(card.details()?.open).toBe(false);
-
+    expect(card.details()?.open).toBe(true);
     card.render(true, 3);
-    expect(card.details()?.open).toBe(false);
-    expect(card.summary()?.textContent).toContain("Working… · 3 tools");
-
+    expect(card.details()?.open).toBe(true);
     card.render(false, 3);
-    expect(card.details()?.open).toBe(false);
+    expect(card.details()?.open).toBe(true);
+    expect(card.summary()?.textContent).toContain("step-2");
     card.unmount();
   });
 
-  it("can still be expanded by hand once done", () => {
+  it("keeps the list collapsed unless the user opens it", () => {
     const card = mountCard();
     card.render(false);
+    expect(card.details()?.open).toBeFalsy();
     card.summary()?.click();
-    expect(card.details()?.open).toBe(true);
-
-    card.render(false);
     expect(card.details()?.open).toBe(true);
     card.unmount();
   });
 });
 
 describe("ToolSteps", () => {
-  it("lists only the last steps and counts the earlier ones when limited", () => {
-    const steps = stepsOf(LIVE_TOOL_STEP_WINDOW + 3);
+  it("renders each repeated tool call as its own chronological action row", () => {
     const html = renderToStaticMarkup(
-      <ToolSteps steps={steps} currentIndex={steps.length - 1} limit={LIVE_TOOL_STEP_WINDOW} />,
+      <ToolSteps
+        steps={[
+          { label: "Web search", count: 3 },
+          { label: "Open page", count: 1 },
+        ]}
+      />,
     );
-    expect(html).toContain("+3 earlier steps");
-    for (const hidden of ["step-0<", "step-1<", "step-2<"]) expect(html).not.toContain(hidden);
-    for (let i = 3; i < steps.length; i++) expect(html).toContain(`step-${i}<`);
-    // The pulsing marker stays on the latest step after the window shifts the indexes.
-    expect(html).toMatch(/◷<\/span><span[^>]*>step-8</);
-    expect(html.match(/◷/g)).toHaveLength(1);
+    expect(html.match(/data-testid="tool-action"/g)).toHaveLength(4);
+    expect(html.match(/>Web search</g)).toHaveLength(3);
+    expect(html).toContain(">Open page</span>");
   });
 
-  it("uses the singular for one hidden step", () => {
+  it("marks only the latest call as active", () => {
     const html = renderToStaticMarkup(
-      <ToolSteps steps={stepsOf(LIVE_TOOL_STEP_WINDOW + 1)} limit={LIVE_TOOL_STEP_WINDOW} />,
+      <ToolSteps
+        steps={[
+          { label: "Web search", count: 2 },
+          { label: "Open page", count: 1 },
+        ]}
+        currentIndex={1}
+      />,
     );
-    expect(html).toContain("+1 earlier step<");
+    expect(html.match(/animate-spin/g)).toHaveLength(1);
+    expect(html.match(/text-success/g)).toHaveLength(2);
   });
 
-  it("exposes the full label as the title of a truncated step", () => {
+  it("exposes the full label as the title of a truncated action", () => {
     const label = "Read apps/web/src/components/ToolActivityDisclosure.tsx";
-    const html = renderToStaticMarkup(<ToolSteps steps={[{ label, count: 2 }]} />);
+    const html = renderToStaticMarkup(<ToolSteps steps={[{ label, count: 1 }]} />);
     expect(html).toContain(`title="${label}"`);
+    expect(html).toContain("whitespace-normal break-words");
+    expect(html).not.toContain("truncate");
   });
 
-  it("lists every step when not limited or when the list fits", () => {
-    const all = renderToStaticMarkup(<ToolSteps steps={stepsOf(9)} />);
-    const fits = renderToStaticMarkup(
-      <ToolSteps steps={stepsOf(LIVE_TOOL_STEP_WINDOW)} limit={LIVE_TOOL_STEP_WINDOW} />,
+  it("lets the latest action wrap across the available viewport width", () => {
+    const html = renderToStaticMarkup(
+      <ToolActivityDisclosure
+        live
+        latestAction="Running: ssh -o BatchMode=yes -o ConnectTimeout=8 root@host 'apt-get check'"
+      >
+        <ToolSteps steps={[]} />
+      </ToolActivityDisclosure>,
     );
-    expect(all).not.toContain("earlier");
-    expect(fits).not.toContain("earlier");
-    for (let i = 0; i < 9; i++) expect(all).toContain(`step-${i}<`);
+    expect(html).toContain("w-full max-w-full");
+    expect(html).toContain("flex-wrap");
+    expect(html).toContain("min-w-[min(8rem,100%)] flex-1");
+    expect(html).toContain("ms-auto shrink-0");
+    expect(html).toContain("whitespace-normal break-words [overflow-wrap:anywhere]");
+    expect(html).not.toContain("truncate");
   });
 });
 
 describe("StandaloneToolActivity", () => {
-  it("renders as a plain line, not a chat bubble", () => {
+  it("renders a single latest-action line, not a chat bubble", () => {
     const html = renderToStaticMarkup(
-      <StandaloneToolActivity live={false} steps={stepsOf(2)} stepCount={2} durationMs={4000} />,
+      <StandaloneToolActivity live={false} steps={stepsOf(2)} durationMs={4000} />,
     );
     expect(html).toContain('data-testid="tool-activity-line"');
-    expect(html).toContain("Done · 2 tools · 4s");
+    expect(html).toContain("step-1");
+    expect(html).toContain("· Done · 4s");
     expect(html).not.toContain("bg-muted");
     expect(html).not.toContain("rounded-[20px]");
+    expect(html).not.toMatch(OPEN_DETAILS);
   });
 
-  it("is open with a windowed list while live, and lists every step once done", () => {
+  it("keeps a long live sequence collapsed but renders all actions when expanded", () => {
     const steps = stepsOf(9);
-    const live = renderToStaticMarkup(<StandaloneToolActivity live steps={steps} stepCount={9} />);
-    expect(live).toMatch(OPEN_DETAILS);
-    expect(live).toContain("+3 earlier steps");
-
-    const done = renderToStaticMarkup(
-      <StandaloneToolActivity live={false} steps={steps} stepCount={9} />,
-    );
-    expect(done).not.toMatch(OPEN_DETAILS);
-    expect(done).not.toContain("earlier");
-    for (let i = 0; i < 9; i++) expect(done).toContain(`step-${i}<`);
+    const html = renderToStaticMarkup(<StandaloneToolActivity live steps={steps} />);
+    expect(html).not.toMatch(OPEN_DETAILS);
+    expect(html).toContain("step-8");
+    expect(html).toContain("· Working");
+    expect(html.match(/data-testid="tool-action"/g)).toHaveLength(9);
   });
 });
 
 describe("ToolOnlyNarration", () => {
-  it("renders a live tools-only message as an open slim line, not a bubble", () => {
+  it("renders live tool activity as one collapsed slim line", () => {
     const html = renderToStaticMarkup(
       <ToolOnlyNarration live blocks={[{ kind: "steps", steps: stepsOf(2) }]} />,
     );
     expect(html).toContain('data-testid="tool-activity-line"');
-    expect(html).toContain("Working… · 2 tools");
-    expect(html).toMatch(OPEN_DETAILS);
+    expect(html).toContain("step-1");
+    expect(html).toContain("· Working");
+    expect(html).not.toMatch(OPEN_DETAILS);
     expect(html).not.toContain("bg-muted");
   });
 
-  it("folds each card once the run is done", () => {
+  it("shows the live tool-start event immediately while the run is active", () => {
+    const html = renderToStaticMarkup(
+      <ToolOnlyNarration
+        live
+        blocks={[{ kind: "progress", text: "Opening page: example.com", activity: true }]}
+      />,
+    );
+    expect(html).toContain("Opening page: example.com");
+    expect(html).toContain("· Working");
+    expect(html).not.toMatch(OPEN_DETAILS);
+  });
+
+  it("keeps prior calls in the expandable history while the latest call is live", () => {
+    const html = renderToStaticMarkup(
+      <ToolOnlyNarration
+        live
+        blocks={[
+          { kind: "steps", steps: [{ label: "Web search", count: 1 }] },
+          { kind: "progress", text: "Opening page: example.com", activity: true },
+        ]}
+      />,
+    );
+    expect(html.match(/data-testid="tool-activity-line"/g)).toHaveLength(1);
+    expect(html).toContain("Opening page: example.com");
+    expect(html).toContain(">Web search</span>");
+    expect(html).toContain(">Opening page: example.com</span>");
+  });
+
+  it("shows only the latest action summary and combines the expanded history", () => {
     const html = renderToStaticMarkup(
       <ToolOnlyNarration
         live={false}
@@ -218,8 +231,9 @@ describe("ToolOnlyNarration", () => {
         ]}
       />,
     );
-    expect(html.match(/data-testid="tool-activity-line"/g)).toHaveLength(2);
-    expect(html).toContain("Done · 3 tools · 12s");
+    expect(html.match(/data-testid="tool-activity-line"/g)).toHaveLength(1);
+    expect(html).toContain("· Done · 12s");
+    expect(html).toContain("step-2");
     expect(html).not.toMatch(OPEN_DETAILS);
   });
 });

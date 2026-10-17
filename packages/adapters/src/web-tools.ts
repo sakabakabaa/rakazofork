@@ -7,7 +7,7 @@ export async function webSearchFromTool(
   args: Record<string, unknown>,
 ) {
   const query = String(args.query ?? "").trim();
-  if (!query) return { error: "query is required" };
+  if (!query) return { error: "query is required; provide a concise search phrase and try again." };
   try {
     const results = await search.search(
       {
@@ -19,7 +19,10 @@ export async function webSearchFromTool(
     );
     return { results };
   } catch (error) {
-    return { error: error instanceof Error ? error.message : String(error) };
+    const detail = error instanceof Error ? error.message : String(error);
+    return {
+      error: `${detail}. Search failed; retry once with a narrower query or another source, then report if web search remains unavailable.`,
+    };
   }
 }
 
@@ -29,7 +32,7 @@ export async function webFetchFromTool(
   args: Record<string, unknown>,
 ) {
   const url = String(args.url ?? "").trim();
-  if (!url) return { error: "url is required" };
+  if (!url) return { error: "url is required; provide a public http(s) page URL and try again." };
   try {
     const result = await fetchProvider.fetch(
       {
@@ -41,6 +44,9 @@ export async function webFetchFromTool(
     );
     return result;
   } catch (error) {
-    return { error: error instanceof Error ? error.message : String(error) };
+    const detail = error instanceof Error ? error.message : String(error);
+    return {
+      error: `${detail}. Page fetch failed; try another public source, and do not treat the failed page as verified evidence.`,
+    };
   }
 }

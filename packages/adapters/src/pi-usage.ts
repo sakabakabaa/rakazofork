@@ -19,6 +19,23 @@ import type { ContextBudget } from "./context-selection.js";
 import { estimateModelContextTokens } from "./model-context.js";
 import { requestedPiCacheWriteRetention, resolvePiCacheRetention } from "./pi-cache-retention.js";
 
+export interface ModelCallTiming {
+  callId: string;
+  startedAt: string;
+  provider: string;
+  model: string;
+  operationKind: UsageOperationKind;
+  agentId?: string;
+  durationMs: number;
+  timeToFirstEventMs: number | null;
+  outcome: "completed" | "error";
+  inputTokens: number | null;
+  outputTokens: number | null;
+  cacheReadTokens: number | null;
+  cacheWriteTokens: number | null;
+  reasoningTokens: number | null;
+}
+
 /** Pi initializes absent usage to zero. Only raw numeric fields can prove reported zero. */
 export type ReportedUsageFields = Set<keyof AgentUsage>;
 const reportedCosts = new WeakMap<ReportedUsageFields, number>();
@@ -217,6 +234,8 @@ export function observedPiStream(
     recordUsage?: (event: Extract<AgentRuntimeEvent, { type: "usage" }>) => void | Promise<void>;
     /** Provider failures only; excludes context, reservations and usage settlement. */
     onProviderError?: (message: AssistantMessage) => void;
+    /** Provider request timing; excludes context preparation and tool execution. */
+    onCallTiming?: (timing: ModelCallTiming) => void | Promise<void>;
   },
 ) {
   const stream = createAssistantMessageEventStream();
@@ -248,6 +267,11 @@ export function observedPiStream(
     let partialMessage: AssistantMessage | undefined;
     let providerError: unknown;
     let providerThrew = false;
+    let providerStartedAt: number | undefined;
+    let providerCompletedAt: number | undefined;
+    let providerStartedAtIso: string | undefined;
+    let firstEventAt: number | undefined;
+    let outcome: ModelCallTiming["outcome"] = "error";
     try {
       // A tool-budget or cancellation stop can reach Pi's next-turn hook after
       // aborting. It is not a model invocation and must not create unknown usage.
@@ -266,6 +290,8 @@ export function observedPiStream(
         : undefined;
       options?.signal?.throwIfAborted();
       started = true;
+      providerStartedAt = performance.now();
+      providerStartedAtIso = new Date().toISOString();
       // Some Pi adapters reject custom fetch outright. Only audited SSE families opt in.
       const collectRawUsage =
         /^(openai-|anthropic-)/.test(model.api) && !model.provider.startsWith("google");
@@ -304,6 +330,7 @@ export function observedPiStream(
           })()
         : upstream;
       for await (const event of events) {
+        firstEventAt ??= performance.now();
         if (hooks?.onProviderError) {
           partialMessage =
             event.type === "done"
@@ -313,6 +340,8 @@ export function observedPiStream(
                 : event.partial;
         }
         if (event.type === "done" || event.type === "error") {
+          providerCompletedAt ??= performance.now();
+          outcome = event.type === "done" ? "completed" : "error";
           const message = event.type === "done" ? event.message : event.error;
           normalized = normalizePiUsage(message.usage, model, reported);
           await emitUsage(
@@ -334,6 +363,7 @@ export function observedPiStream(
       }
       stream.end(await upstream.result());
     } catch (error) {
+      providerCompletedAt ??= providerStartedAt === undefined ? undefined : performance.now();
       let terminalError = error;
       if (started && normalized === null) {
         try {
@@ -374,6 +404,34 @@ export function observedPiStream(
       if (providerThrew && terminalError === providerError) hooks?.onProviderError?.(message);
       stream.push({ type: "error", reason: "error", error: message });
       stream.end(message);
+    } finally {
+      if (providerStartedAt !== undefined) {
+        try {
+          await hooks?.onCallTiming?.({
+            callId,
+            startedAt: providerStartedAtIso ?? new Date().toISOString(),
+            provider: model.provider,
+            model: model.id,
+            ...attribution,
+            durationMs: Math.max(
+              0,
+              Math.round((providerCompletedAt ?? performance.now()) - providerStartedAt),
+            ),
+            timeToFirstEventMs:
+              firstEventAt === undefined
+                ? null
+                : Math.max(0, Math.round(firstEventAt - providerStartedAt)),
+            outcome,
+            inputTokens: normalized?.inputTokens ?? null,
+            outputTokens: normalized?.outputTokens ?? null,
+            cacheReadTokens: normalized?.cacheReadTokens ?? null,
+            cacheWriteTokens: normalized?.cacheWriteTokens ?? null,
+            reasoningTokens: normalized?.reasoningTokens ?? null,
+          });
+        } catch {
+          /* Telemetry must never change model-call behavior. */
+        }
+      }
     }
   })();
   return stream;

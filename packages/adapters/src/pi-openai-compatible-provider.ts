@@ -94,12 +94,16 @@ function openAiCompatibleProvider(models: Model<"openai-completions">[]): Provid
     stream: (model, context, options) =>
       api.stream(model, context, {
         ...options,
-        fetch: createOpenAiCompatibleFetch(options?.fetch),
+        fetch: createOpenAiCompatibleFetch(options?.fetch, resolveHostname, {
+          forcePairedDispatcher: true,
+        }),
       }),
     streamSimple: (model, context, options) =>
       api.streamSimple(model, context, {
         ...options,
-        fetch: createOpenAiCompatibleFetch(options?.fetch),
+        fetch: createOpenAiCompatibleFetch(options?.fetch, resolveHostname, {
+          forcePairedDispatcher: true,
+        }),
       }),
   };
   return createProvider({
@@ -171,7 +175,7 @@ function requestCarriesAuthorization(input: RequestInfo | URL, init?: RequestIni
 export function createOpenAiCompatibleFetch(
   baseFetch: typeof globalThis.fetch = dispatcherFetch,
   resolve: ResolveHostname = resolveHostname,
-  opts?: { allowPublic?: boolean },
+  opts?: { allowPublic?: boolean; forcePairedDispatcher?: boolean },
 ): typeof globalThis.fetch {
   return async (input, init) => {
     const rawUrl = input instanceof Request ? input.url : String(input);
@@ -188,9 +192,14 @@ export function createOpenAiCompatibleFetch(
             connect: { lookup: createOpenAiCompatibleLookup(url, resolve) },
           })
         : undefined;
-    // Node's fetch rejects this package Agent. Pair them only when the
-    // dispatcher is attached; a caller-supplied fetch stays in charge.
-    const transport = dispatcher ? fetchPairedWithDispatcher(baseFetch) : baseFetch;
+    // Node's fetch rejects this package Agent. The provider runtime forces
+    // the paired package fetch for pinned hosts; direct callers can retain a
+    // custom fetch for tests and local IP endpoints.
+    const transport = dispatcher
+      ? opts?.forcePairedDispatcher
+        ? dispatcherFetch
+        : fetchPairedWithDispatcher(baseFetch)
+      : baseFetch;
     try {
       const response = await transport(url, {
         ...(await requestInitFor(input, init)),

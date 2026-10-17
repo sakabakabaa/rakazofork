@@ -39,6 +39,11 @@ export function CloudAgentCard({
             )}
           </Badge>
         </div>
+        {block.status === "running" && block.latestAction ? (
+          <span className="break-words text-sm text-muted-foreground" title={block.latestAction}>
+            {block.latestAction}
+          </span>
+        ) : null}
         {prHref ? (
           <span className="text-muted-foreground">
             <Trans>Pull request</Trans>

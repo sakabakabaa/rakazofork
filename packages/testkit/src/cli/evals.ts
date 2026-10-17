@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { parseArgs } from "node:util";
+import { FakeWebProvider } from "@rakazo/adapters";
 import { ModelConnectInputSchema } from "@rakazo/contracts";
 import { loadRootEnv } from "@rakazo/core/node/load-root-env";
 import type { StartedPostgreSqlContainer } from "@testcontainers/postgresql";
@@ -45,9 +46,23 @@ async function main() {
       output: { type: "string", default: "test-report/evals/report.json" },
     },
   });
+  const qualityCaseIds = new Set([
+    "file-create",
+    "file-transform",
+    "terminal-file",
+    "browser-research",
+    "agent-setup",
+    "remember-preference",
+  ]);
   const cases =
-    values.suite === "history" ? HISTORY_EVAL_CASES : values.suite === "product" ? EVAL_CASES : [];
-  if (!cases.length) throw new Error("Unknown suite; use product or history");
+    values.suite === "history"
+      ? HISTORY_EVAL_CASES
+      : values.suite === "quality"
+        ? EVAL_CASES.filter((scenario) => qualityCaseIds.has(scenario.id))
+        : values.suite === "product"
+          ? EVAL_CASES
+          : [];
+  if (!cases.length) throw new Error("Unknown suite; use product, quality, or history");
   if (values["wire-diagnostics"] && values.suite !== "history")
     throw new Error("Synthetic wire diagnostics require the history suite");
   const strategies = [...new Set(values.strategy?.length ? values.strategy : ["current"])];
@@ -85,7 +100,8 @@ async function main() {
   let probeTotals: { costUsd: number | null; modelCalls: number } | undefined;
   const report = {
     version: 2,
-    kind: "real-model-product-eval",
+    kind:
+      values.suite === "quality" ? "real-model-task-quality-benchmark" : "real-model-product-eval",
     startedAt: new Date().toISOString(),
     model: values.model ?? process.env.PI_DEFAULT_MODEL ?? null,
     provider: values.provider ?? null,
@@ -102,11 +118,21 @@ async function main() {
       values.suite === "history"
         ? "Short chats use originals. Larger ordinary cases use a synthetic prepared summary retaining common facts and omitting rare identifiers; backlog, failed-summary and oversized cases retain raw compaction stress."
         : null,
-    fixtureVersion: values.suite === "history" ? HISTORY_FIXTURE_VERSION : "product-v1",
+    fixtureVersion:
+      values.suite === "history"
+        ? HISTORY_FIXTURE_VERSION
+        : values.suite === "quality"
+          ? "quality-v1"
+          : "product-v1",
     caseFixtureVersions: Object.fromEntries(
       selected.map((c) => [
         c.id,
-        c.history?.version ?? (values.suite === "history" ? HISTORY_FIXTURE_VERSION : "product-v1"),
+        c.history?.version ??
+          (values.suite === "history"
+            ? HISTORY_FIXTURE_VERSION
+            : values.suite === "quality"
+              ? "quality-v1"
+              : "product-v1"),
       ]),
     ),
     codeRevision: codeRevision(),
@@ -123,10 +149,10 @@ async function main() {
       "Per-call provider reported charge when available, otherwise explicit pricing estimate; unavailable remains null",
     firstResponseDefinition:
       "First persisted streamed text event after run creation, or final bot message if no text streamed; excludes activity/tool-only events. Polling does not define the timestamp.",
-    fixtures: "synthetic services, messaging and fake sandbox",
+    fixtures: "synthetic services, messaging, fake sandbox and seeded web provider",
     assistedRetries: false,
     limitations: [
-      "Does not evaluate browser perception, native recording perception, or real external services.",
+      "Browser research uses a seeded offline web provider; the benchmark does not evaluate live external sites, browser perception, or native recording perception.",
       "Release routine grades a scheduled new-release read; unchanged-release notification deduplication is not covered.",
       "Deterministic fact checks are deliberately narrow; they do not grade overall writing quality.",
       "Cost uses provider-reported charges where available and explicit pricing estimates otherwise. Spend reservations are a guard, not a billing guarantee.",
@@ -364,7 +390,7 @@ async function main() {
             ...controls,
             connection,
             pricing,
-            createApp: async (composio, messaging) => {
+            createApp: async (composio, messaging, evalCase) => {
               const sandbox = new EvalSandboxProvider();
               let acceptingCalls = true;
               const cacheDecisions: CacheDecisionMeasurement[] = [];
@@ -409,6 +435,11 @@ async function main() {
                 [connection.apiKey ?? "", connection.baseUrl ?? ""],
                 toolLoopDiagnostics,
               );
+              const web = new FakeWebProvider();
+              if (evalCase.webFixture) {
+                web.searchHits = structuredClone(evalCase.webFixture.searchHits);
+                web.fetchResult = structuredClone(evalCase.webFixture.fetchResult);
+              }
               const handles = await createApp({
                 runtime: observedRuntime,
                 contextStrategy: planned.strategy as
@@ -426,6 +457,7 @@ async function main() {
                 composio,
                 messaging,
                 messagingOpenSignup: false,
+                ...(evalCase.webFixture ? { web } : {}),
                 defaultProvider: connection.provider,
                 defaultModel: connection.modelId!,
                 deploymentModelKey: undefined,

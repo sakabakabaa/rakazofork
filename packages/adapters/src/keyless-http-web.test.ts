@@ -120,7 +120,8 @@ describe("web tool apply with fake provider", () => {
     const fake = new FakeWebProvider();
     fake.searchError = new Error("boom");
     await expect(webSearchFromTool(fake, ctx, { query: "q" })).resolves.toEqual({
-      error: "boom",
+      error:
+        "boom. Search failed; retry once with a narrower query or another source, then report if web search remains unavailable.",
     });
   });
 });

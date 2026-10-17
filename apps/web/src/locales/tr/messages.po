@@ -4814,3 +4814,27 @@ msgstr "Adın"
 #: src/pages/Welcome.tsx
 msgid "Your team of always-on agents<0/>that you can give real work to."
 msgstr "Gerçek işler verebileceğin,<0/>her zaman açık agent takımın."
+
+#: src/components/CoderPanel.tsx
+msgid "Coder"
+msgstr "Kod asistanı"
+
+#: src/components/CoderPanel.tsx
+msgid "Stop run"
+msgstr "Çalışmayı durdur"
+
+#: src/components/CoderPanel.tsx
+msgid "No coder runs yet."
+msgstr "Henüz çalışma yok."
+
+#: src/components/CoderPanel.tsx
+msgid "Could not load coder activity."
+msgstr "Etkinlik yüklenemedi."
+
+#: src/components/CoderPanel.tsx
+msgid "Reconnecting…"
+msgstr "Yeniden bağlanıyor…"
+
+#: src/components/CoderPanel.tsx
+msgid "Earlier runs"
+msgstr "Önceki çalışmalar"

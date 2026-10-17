@@ -53,4 +53,16 @@ describe("shared cloud agent projection", () => {
     ])
       expect(cloudAgentHttpsUrl(url)).toBeUndefined();
   });
+
+  it("keeps a bounded latest-action label on live agent cards", () => {
+    const block = cloudAgentBlockFromPayload({
+      status: "running",
+      latestAction: `  ${"Reading package manifest ".repeat(20)}  `,
+    });
+    expect(block.latestAction).toHaveLength(240);
+    expect(block.latestAction?.startsWith("Reading package manifest")).toBe(true);
+    expect(
+      cloudAgentBlockFromPayload({ status: "running", latestAction: "   " }).latestAction,
+    ).toBeUndefined();
+  });
 });

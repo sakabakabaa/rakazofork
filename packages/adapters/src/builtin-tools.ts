@@ -297,9 +297,28 @@ export const builtinAgentTools: ConnectorTool[] = [
     },
   },
   {
+    name: "coder_run",
+    description:
+      "Delegate a coding task to the installed DSH CLI and stream its actions to the Coder panel below the computer view. Supply the complete task and an existing workspace cwd. Uses the headless profile and saved command credentials. Wait for this tool's completion; do not use nohup, log files, or sleep/poll loops. Inspect the final exit code and verify generated files. executable may be an installed CLI wrapper path when dsh is not on PATH; never include shell arguments in it.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        task: { type: "string", minLength: 1, maxLength: 32000 },
+        cwd: { type: "string" },
+        executable: {
+          type: "string",
+          description: "Installed DSH executable or wrapper; defaults to dsh",
+        },
+        profile: { type: "string", description: "DSH profile; defaults to headless" },
+      },
+      required: ["task"],
+      additionalProperties: false,
+    },
+  },
+  {
     name: "shell",
     description:
-      "Run a command inside this bot's computer. cwd defaults to the bot's folder on a Team Computer and the workspace root on a Private Computer. Output can arrive while the command is still running; tell the user any one-time code or sign-in URL in that output.",
+      "Run a command inside this bot's computer. cwd defaults to the bot's folder on a Team Computer and the workspace root on a Private Computer. The result includes stdout/stderr and the exit status; check the status before treating a command as successful. Output can arrive while the command is still running; tell the user any one-time code or sign-in URL in that output. After creating or changing a file, use read_file to verify its contents.",
     inputSchema: {
       type: "object",
       properties: {
@@ -411,7 +430,7 @@ export const builtinAgentTools: ConnectorTool[] = [
   {
     name: "render_plot",
     description:
-      'Render a chart from tabular data as a PNG and attach it to the chat. Backed by Observable Plot: bar, line, area, scatter, histogram, heatmap, box plot, facets, and more via a declarative JSON spec. Call with {"charts": true} FIRST to list every chart type with a complete runnable example spec ({"charts": "<keyword>"} searches), then copy the closest example and substitute your rows and columns. {"help": true} returns the full guide. Pass rows inline as data, or data_path for a .csv/.tsv/.json file in your home.',
+      'Render a chart from tabular data as a PNG and attach it to the chat. Use when clear numeric data would be easier to understand as a comparison, trend, or composition. Backed by Observable Plot: bar, line, area, scatter, histogram, heatmap, box plot, facets, and more via a declarative JSON spec. Call with {"charts": true} FIRST to list every chart type with a complete runnable example spec ({"charts": "<keyword>"} searches), then copy the closest example and substitute your rows and columns. {"help": true} returns the full guide. Pass rows inline as data, or data_path for a .csv/.tsv/.json file in your home.',
     inputSchema: {
       type: "object",
       properties: {
@@ -526,7 +545,7 @@ export const builtinAgentTools: ConnectorTool[] = [
   {
     name: "web_search",
     description:
-      "Search the public web. Returns titles, URLs, and snippets. Use when you need current information or links; follow with web_fetch to read a page. Does not need a computer.",
+      "Search the public web. Returns titles, URLs, and snippets that are leads, not full-source verification. For current or precise claims, fetch the relevant result with web_fetch; compare independent sources when the task asks for corroboration. Include source links in the answer. Does not need a computer.",
     inputSchema: {
       type: "object",
       properties: {
@@ -543,7 +562,7 @@ export const builtinAgentTools: ConnectorTool[] = [
   {
     name: "web_fetch",
     description:
-      "Fetch a public http(s) page and return readable text (title + content). Read-only; no JavaScript. Use after web_search when you need the page itself.",
+      "Fetch a public http(s) page and return readable text (title + content), which may be truncated. Read-only; no JavaScript. Use after web_search to verify claims against the page. A blocked or empty page is not evidence; report the limitation or try another source.",
     inputSchema: {
       type: "object",
       properties: {

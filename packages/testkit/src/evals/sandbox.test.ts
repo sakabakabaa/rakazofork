@@ -11,6 +11,32 @@ const context: AdapterContext = {
 };
 
 describe("honest offline eval shell results", () => {
+  it("allows the exact synthetic terminal command used by the quality benchmark", async () => {
+    const sandbox = new EvalSandboxProvider();
+    const computer = await sandbox.provision({ botId: "bot", homePath: "/fixture" }, context);
+    const events: ProcessEvent[] = [];
+    for await (const event of sandbox.execute(
+      computer,
+      {
+        argv: [
+          "bash",
+          "-c",
+          "wrapper",
+          "rakazo-background-launch",
+          "computer",
+          "run",
+          "call",
+          "echo RAKAZO_TERMINAL_CHECK",
+        ],
+      },
+      context,
+    ))
+      events.push(event);
+    expect(events).toContainEqual({ type: "stdout", data: "RAKAZO_TERMINAL_CHECK\n" });
+    expect(events).toContainEqual({ type: "exit", code: 0 });
+    expect(sandbox.harnessIssues).toHaveLength(0);
+  });
+
   it("does not claim a shell-created file exists when it never executed the command", async () => {
     const sandbox = new EvalSandboxProvider();
     const computer = await sandbox.provision({ botId: "bot", homePath: "/fixture" }, context);

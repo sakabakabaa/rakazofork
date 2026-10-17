@@ -29,6 +29,7 @@ import type {
   FaviconResolver,
   getBotSecretMetadata,
   IntegrationProviderSettings,
+  LinkPreviewResolver,
   MemoryProviderResolver,
   PiOAuthLogins,
   RemoteConnectorDependencies,
@@ -55,6 +56,7 @@ import {
   computerSupportsUpdate,
   computerUpdateView,
   createFaviconResolver,
+  createLinkPreviewResolver,
   createTicket,
   createVoiceProvider,
   defaultCatalogModelId,
@@ -145,6 +147,7 @@ import {
   IntegrationProviderIdSchema,
   OPENAI_COMPATIBLE_PROVIDER_ID,
   parseTicketRef,
+  settleCoderCommand,
   usableModelId,
 } from "@rakazo/contracts";
 import {
@@ -559,6 +562,8 @@ export interface RouterDeps {
   codexCatalog?: CodexLiveCatalog;
   /** Site icons for links; defaults to the per-process cache that fetches them. */
   favicons?: FaviconResolver;
+  /** Preview cards for links; defaults to the per-process cache that fetches them. */
+  linkPreviews?: LinkPreviewResolver;
   /**
    * Detached refresh for a stored credential whose bearer expired — the live
    * catalog path calls it instead of refreshing inline. Defaults to the
@@ -579,6 +584,8 @@ export interface RouterDeps {
   dataDir: string;
   /** Present when the external messaging surface is enabled. */
   messaging?: { enabled: boolean; providers: string[]; openSignup: boolean };
+  /** Private WhatsApp Web gateway control endpoint; never returned to clients. */
+  whatsappWeb?: { url: string; token: string };
   /** Present only when the deployment bills; self-hosted installs leave it unset. */
   billing?: BillingService;
   env: {
@@ -763,6 +770,7 @@ export function createRouter(deps: RouterDeps) {
   const mcpOAuth = deps.mcpOAuth ?? new McpOAuthBroker(deps.prisma, deps.secrets);
   const codexCatalog = deps.codexCatalog ?? new CodexCatalogCache();
   const favicons = deps.favicons ?? createFaviconResolver();
+  const linkPreviews = deps.linkPreviews ?? createLinkPreviewResolver();
   const refreshExpiredCredential =
     deps.refreshExpiredModelCredential ??
     ((scope: { userId: string; spaceId: string }, secretId: string, provider: string) =>
@@ -3020,16 +3028,41 @@ export function createRouter(deps: RouterDeps) {
           where: { spaceId: context.actor.spaceId, botId: bot.id, type: "computer.command" },
           orderBy: [{ createdAt: "desc" }, { id: "desc" }],
           take: COMPUTER_COMMAND_HISTORY_EVENTS,
-          select: { payload: true, createdAt: true },
+          select: { payload: true, createdAt: true, runId: true },
         });
-        return foldComputerCommands(
-          events.reverse().flatMap((event) => {
-            const parsed = ComputerCommandSchema.safeParse(event.payload);
-            return parsed.success
-              ? [{ ...parsed.data, createdAt: event.createdAt.toISOString() }]
-              : [];
-          }),
-        );
+        const commands = events.reverse().flatMap((event) => {
+          const parsed = ComputerCommandSchema.safeParse(event.payload);
+          return parsed.success
+            ? [{ ...parsed.data, createdAt: event.createdAt.toISOString(), runId: event.runId }]
+            : [];
+        });
+        const pendingRunIds = [
+          ...new Set(
+            commands
+              .filter((command) => command.coder && command.status === "running" && command.runId)
+              .map((command) => command.runId!),
+          ),
+        ];
+        const terminalRuns = pendingRunIds.length
+          ? await deps.prisma.run.findMany({
+              where: {
+                id: { in: pendingRunIds },
+                spaceId: context.actor.spaceId,
+                botId: bot.id,
+                status: { in: ["cancelled", "failed", "completed"] },
+              },
+              select: { id: true, status: true, completedAt: true, updatedAt: true },
+            })
+          : [];
+        const byId = new Map(terminalRuns.map((run) => [run.id, run]));
+        return foldComputerCommands(commands).map(({ runId, ...command }) => {
+          const run = runId ? byId.get(runId) : undefined;
+          return settleCoderCommand(
+            command,
+            run?.status,
+            (run?.completedAt ?? run?.updatedAt ?? new Date()).toISOString(),
+          );
+        });
       }),
       terminalUrl: authed.computer.terminalUrl.handler(async ({ context, input }) => {
         let bot = await repos.getBot(context.actor, input.botId);
@@ -5387,6 +5420,57 @@ export function createRouter(deps: RouterDeps) {
           ),
         };
       }),
+      whatsappWeb: {
+        status: authed.messaging.whatsappWeb.status.handler(async () => {
+          if (!deps.whatsappWeb)
+            return { enabled: false, state: "disabled", qrDataUrl: null, phone: null };
+          const response = await fetch(new URL("/_rakazo/status", deps.whatsappWeb.url), {
+            headers: { authorization: "Bearer " + deps.whatsappWeb.token },
+            signal: AbortSignal.timeout(5_000),
+          });
+          if (!response.ok)
+            throw new ORPCError("INTERNAL_SERVER_ERROR", {
+              message: "WhatsApp Web gateway unavailable",
+            });
+          const payload = (await response.json()) as {
+            status?: string;
+            qrDataUrl?: string | null;
+            phone?: string | null;
+          };
+          return {
+            enabled: true,
+            state: payload.status ?? "unknown",
+            qrDataUrl: payload.qrDataUrl ?? null,
+            phone: payload.phone ?? null,
+          };
+        }),
+        connect: authed.messaging.whatsappWeb.connect.handler(async () => {
+          if (!deps.whatsappWeb) throw new ORPCError("NOT_FOUND");
+          const response = await fetch(new URL("/_rakazo/connect", deps.whatsappWeb.url), {
+            method: "POST",
+            headers: { authorization: "Bearer " + deps.whatsappWeb.token },
+            signal: AbortSignal.timeout(5_000),
+          });
+          if (!response.ok)
+            throw new ORPCError("INTERNAL_SERVER_ERROR", {
+              message: "WhatsApp Web gateway unavailable",
+            });
+          return { ok: true as const };
+        }),
+        disconnect: authed.messaging.whatsappWeb.disconnect.handler(async () => {
+          if (!deps.whatsappWeb) throw new ORPCError("NOT_FOUND");
+          const response = await fetch(new URL("/_rakazo/logout", deps.whatsappWeb.url), {
+            method: "POST",
+            headers: { authorization: "Bearer " + deps.whatsappWeb.token },
+            signal: AbortSignal.timeout(10_000),
+          });
+          if (!response.ok)
+            throw new ORPCError("INTERNAL_SERVER_ERROR", {
+              message: "WhatsApp Web gateway unavailable",
+            });
+          return { ok: true as const };
+        }),
+      },
       link: {
         start: authed.messaging.link.start.handler(async ({ context, input }) => {
           const bot = await deps.prisma.bot.findFirst({
@@ -5998,6 +6082,7 @@ export function createRouter(deps: RouterDeps) {
     },
     links: {
       favicon: authed.links.favicon.handler(async ({ input }) => favicons.favicon(input.origin)),
+      preview: authed.links.preview.handler(async ({ input }) => linkPreviews.preview(input.url)),
     },
     runs: {
       list: authed.runs.list.handler(async ({ context, input }) => ({

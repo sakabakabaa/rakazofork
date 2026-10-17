@@ -14,7 +14,7 @@ import type { DiagnosticToolObservation, HistoryDiagnostic } from "./history-obs
 import type { CacheDecisionMeasurement, EvalPricing } from "./measurement.js";
 import { measureCalls } from "./measurement.js";
 import type { FailureCategory, TrialResult } from "./report.js";
-import { emptyTrial, redact } from "./report.js";
+import { emptyTrial, measureToolRetries, redact } from "./report.js";
 import { EvalServices } from "./services.js";
 import type { LedgerCall } from "./step-accounting.js";
 import { measureWorkflowSteps } from "./step-accounting.js";
@@ -46,7 +46,11 @@ export type TrialOptions = {
   connection: ModelConnectInput;
   timeoutMs: number;
   maxToolCalls: number;
-  createApp: (services: EvalServices, messaging: MessagingTeamChatEmulator) => Promise<EvalApp>;
+  createApp: (
+    services: EvalServices,
+    messaging: MessagingTeamChatEmulator,
+    scenario: EvalCase,
+  ) => Promise<EvalApp>;
 };
 class EvalFailure extends Error {
   constructor(
@@ -129,7 +133,7 @@ export async function runTrial(
       });
   };
   try {
-    handles = await options.createApp(services, messaging);
+    handles = await options.createApp(services, messaging, scenario);
     const trial = handles;
     const { app, prisma } = trial;
     const setupActor = async () => {
@@ -457,14 +461,18 @@ export async function runTrial(
           result.firstResponseMs = Math.max(0, firstMessage.createdAt.getTime() - requestStarted);
       }
       const events = await prisma.event.findMany({
-        where: { runId, type: "agent.tool.called" },
+        where: { runId, type: { in: ["agent.tool.called", "agent.tool.completed"] } },
         orderBy: { seq: "asc" },
       });
+      const retries = measureToolRetries(events);
+      result.toolFailures += retries.toolFailures;
+      result.toolRetries += retries.toolRetries;
+      const callEvents = events.filter((event) => event.type === "agent.tool.called");
       result.toolCalls = seenToolCount;
       result.trace.push({
         step: stepIndex + 1,
         status: terminal.status,
-        tools: events.map((e) =>
+        tools: callEvents.map((e) =>
           redact(String((e.payload as { name?: string }).name ?? "unknown"), secrets),
         ),
       });
@@ -562,6 +570,9 @@ export async function runTrial(
       where: { botId },
       select: { name: true, prompt: true, crons: true, active: true },
     });
+    const botNames = await handles.prisma.bot
+      .findMany({ where: { spaceId: actors[actors.length - 1]!.spaceId }, select: { name: true } })
+      .then((rows) => rows.map((row) => row.name));
     await captureTools();
     const evidence: Evidence = {
       text: lastText,
@@ -578,6 +589,7 @@ export async function runTrial(
       priorMemory,
       destinationWrites: handles.connector?.records.length ?? 0,
       toolNames: [...seenTools.values()].map((event) => event.name),
+      botNames,
       messaging: {
         originThreadId: messagingOriginThreadId,
         outbound: structuredClone(messaging.sent),

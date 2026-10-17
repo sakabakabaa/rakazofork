@@ -12,6 +12,7 @@ export const BUILTIN_TOOL_NAMES = [
   "write_file",
   "attach_file",
   "shell",
+  "coder_run",
   "open_path",
   "launch_app",
   "request_takeover",

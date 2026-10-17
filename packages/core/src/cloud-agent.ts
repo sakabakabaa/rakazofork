@@ -24,5 +24,8 @@ export function cloudAgentBlockFromPayload(
     ...(payload.branch ? { branch: String(payload.branch) } : {}),
     ...(cloudAgentHttpsUrl(String(payload.prUrl ?? "")) ? { prUrl: String(payload.prUrl) } : {}),
     ...(payload.latestRunId ? { latestRunId: String(payload.latestRunId) } : {}),
+    ...(typeof payload.latestAction === "string" && payload.latestAction.trim()
+      ? { latestAction: payload.latestAction.trim().slice(0, 240) }
+      : {}),
   };
 }

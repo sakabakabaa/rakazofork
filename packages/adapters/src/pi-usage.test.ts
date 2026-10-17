@@ -55,6 +55,48 @@ async function run(usage?: object) {
 }
 
 describe("Pi usage accounting", () => {
+  it("reports provider duration and time to first response event", async () => {
+    const onCallTiming = vi.fn();
+    const stream = await observedPiStream(
+      builtinModels(),
+      model,
+      { messages: [] },
+      {
+        apiKey: "fake-fixture-key",
+        fetch: async () =>
+          new Response(sse({ prompt_tokens: 10, completion_tokens: 2, total_tokens: 12 }), {
+            headers: { "content-type": "text/event-stream" },
+          }),
+      },
+      vi.fn(),
+      undefined,
+      { operationKind: "answer", agentId: "main" },
+      { onCallTiming },
+    );
+    for await (const _event of stream) {
+      /* Consume the synthetic model response. */
+    }
+
+    expect(onCallTiming).toHaveBeenCalledOnce();
+    expect(onCallTiming).toHaveBeenCalledWith(
+      expect.objectContaining({
+        callId: expect.any(String),
+        provider: "openrouter",
+        model: "fixture",
+        operationKind: "answer",
+        agentId: "main",
+        durationMs: expect.any(Number),
+        timeToFirstEventMs: expect.any(Number),
+        outcome: "completed",
+        inputTokens: 10,
+        outputTokens: 2,
+        cacheReadTokens: null,
+        cacheWriteTokens: null,
+        reasoningTokens: null,
+      }),
+    );
+  });
+
   it.each([false, true])(
     "acknowledges a producer sink only after successful accounting (fails=%s)",
     async (fails) => {

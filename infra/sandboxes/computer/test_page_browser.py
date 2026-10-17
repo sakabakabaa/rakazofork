@@ -54,15 +54,44 @@ class PageBrowserTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "ERR_NAME_NOT_RESOLVED"):
             helper.navigate(client, "session", "https://example.test")
 
-    def test_preserves_completed_actions_when_next_response_is_lost(self):
+    def test_marks_lost_batch_response_uncertain_instead_of_replaying(self):
         with patch.object(helper, "ensure_helpers"), patch.object(helper, "eval_json") as evaluate:
-            evaluate.side_effect = [True, {}, True, TimeoutError("lost response")]
+            evaluate.side_effect = TimeoutError("lost response")
             result = helper.act(Mock(), "session", [
                 {"kind": "click", "ref": "first"}, {"kind": "click", "ref": "second"},
             ])
-        self.assertEqual(result["completed"], 1)
+        self.assertEqual(result["completed"], 0)
         self.assertTrue(result["uncertain"])
         self.assertFalse(result["ok"])
+        self.assertEqual(evaluate.call_count, 1)
+
+    def test_batches_actions_preflight_mutations_and_snapshot_in_one_evaluation(self):
+        with patch.object(helper, "ensure_helpers"), patch.object(helper, "eval_json") as evaluate:
+            evaluate.return_value = {"ok": True, "completed": 2, "url": "https://example.test/"}
+            result = helper.act(Mock(), "session", [
+                {"kind": "click", "ref": "first"},
+                {"kind": "fill", "ref": "second", "text": "hello"},
+            ])
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["completed"], 2)
+        self.assertEqual(evaluate.call_count, 1)
+        expression = evaluate.call_args.args[2]
+        self.assertIn("window.__rakazoPageBrowser.resolve(step.ref)", expression)
+        self.assertIn("window.__rakazoPageBrowser.snapshot()", expression)
+
+    def test_stale_ref_aborts_batch_before_mutation(self):
+        with patch.object(helper, "ensure_helpers"), patch.object(helper, "eval_json") as evaluate:
+            evaluate.return_value = {
+                "ok": False, "completed": 0, "uncertain": False,
+                "error": "Stale element ref. Take a fresh snapshot.",
+            }
+            result = helper.act(Mock(), "session", [
+                {"kind": "click", "ref": "stale"},
+            ])
+        self.assertFalse(result["ok"])
+        self.assertFalse(result["uncertain"])
+        self.assertEqual(result["completed"], 0)
+        self.assertEqual(result["fallback"], "computer_act")
 
     def test_rejects_missing_text_before_any_action(self):
         with patch.object(helper, "ensure_helpers") as ensure:
@@ -73,14 +102,13 @@ class PageBrowserTest(unittest.TestCase):
     def test_binds_saved_login_fill_to_its_origin_in_the_same_evaluation(self):
         with patch.object(helper, "ensure_helpers"), patch.object(helper, "snapshot", return_value={"ok": True}), \
                 patch.object(helper, "eval_json") as evaluate:
-            evaluate.side_effect = [True, {}]
+            evaluate.return_value = {"ok": True, "completed": 1}
             helper.act(Mock(), "session", [
                 {"kind": "fill", "ref": "e1", "text": "fake-password", "origin": "https://login.example.test"},
             ])
-        self.assertEqual(
-            evaluate.call_args_list[1].args[2],
-            'window.__rakazoPageBrowser.fill("e1", "fake-password", "https://login.example.test")',
-        )
+        self.assertEqual(evaluate.call_count, 1)
+        self.assertIn('"origin":"https://login.example.test"', evaluate.call_args.args[2])
+        self.assertIn('"text":"fake-password"', evaluate.call_args.args[2])
 
     def test_rejects_origin_outside_fill_before_any_action(self):
         with patch.object(helper, "ensure_helpers") as ensure:
