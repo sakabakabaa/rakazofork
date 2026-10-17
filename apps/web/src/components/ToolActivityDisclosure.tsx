@@ -13,6 +13,7 @@ import {
   MousePointer2,
   Pencil,
   Search,
+  Target,
   Terminal,
   Wrench,
 } from "lucide-react";
@@ -23,6 +24,7 @@ type ToolStep = Extract<ThreadMessage["blocks"][number], { kind: "steps" }>["ste
 
 function toolIcon(label: string): LucideIcon {
   const name = label.toLowerCase();
+  if (name.includes("goal")) return Target;
   if (name.includes("search")) return Search;
   if (name.includes("browser") || name.includes("web fetch") || name.includes("navigate")) {
     return Globe;

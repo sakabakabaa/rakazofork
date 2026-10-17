@@ -149,6 +149,7 @@ import { CallCard } from "../components/call/CallCard";
 import { VoiceChatCard } from "../components/call/VoiceChatCard";
 import { ComputerWorkspace } from "../components/computer/ComputerWorkspace";
 import { lazyOverlay } from "../components/ErrorBoundary";
+import { GoalProgressCard } from "../components/GoalProgressCard";
 import { LongReplyMarkdown } from "../components/LongReplyMarkdown";
 import { MessageHoverMetadata } from "../components/MessageHoverMetadata";
 import {
@@ -3638,6 +3639,7 @@ export function ShellPage() {
             <Trans>Teaching in progress. Stop teaching before sending a new message.</Trans>
           </div>
         ) : null}
+        {active && !inGroup ? <GoalProgressCard key={active.id} botId={active.id} /> : null}
         {active || activeGroup ? (
           <Composer
             key={inGroup ? `group:${groupId}` : `bot:${active?.id}`}

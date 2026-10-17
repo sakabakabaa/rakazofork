@@ -4842,3 +4842,27 @@ msgstr "Execuções anteriores"
 #: src/components/LongReplyMarkdown.tsx
 msgid "Show full response"
 msgstr "Show full response"
+
+#: src/components/GoalProgressCard.tsx
+msgid "Verification"
+msgstr "Verification"
+
+#: src/components/GoalProgressCard.tsx
+msgid "Task checkpoint"
+msgstr "Task checkpoint"
+
+#: src/components/GoalProgressCard.tsx
+msgid "Pause goal"
+msgstr "Pause goal"
+
+#: src/components/GoalProgressCard.tsx
+msgid "Resume goal"
+msgstr "Resume goal"
+
+#: src/components/GoalProgressCard.tsx
+msgid "Stop goal"
+msgstr "Stop goal"
+
+#: src/components/GoalProgressCard.tsx
+msgid "Could not refresh goal. Try again."
+msgstr "Could not refresh goal. Try again."

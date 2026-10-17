@@ -357,6 +357,14 @@ import {
   takeoverContinuePlan,
 } from "./takeover-resume.js";
 import { TASK_CATALOG_GUIDANCE, taskCatalogFromTool } from "./task-catalog.js";
+import {
+  createGoal,
+  goalCheckpoint,
+  goalContinuation,
+  listGoals,
+  settleRunGoal,
+  updateGoal,
+} from "./task-goals.js";
 import { getActiveTeachingSession, parsePlaybook } from "./teaching-session.js";
 import {
   attachWorkspaceFileToThread,
@@ -397,6 +405,7 @@ const READ_ONLY_AGENT_TOOLS = new Set([
   "task_catalog",
   "recall_memory",
   "schedule_list",
+  "goal_status",
   "scratchpad_list",
   "board_tickets",
   "ticket_get",
@@ -3600,7 +3609,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
           discovered,
           currentTurnImages,
           memoryContext,
-          scratchpadContext,
+          savedScratchpadContext,
           ticketContext,
           recalled,
         ] = await Promise.all([
@@ -3623,6 +3632,18 @@ export function createRunExecutor(deps: ExecutorDeps) {
               }),
           recallPromise,
         ]);
+        const goalToolsAllowed =
+          !messagingChannelRun && !thread.groupId && !isBackgroundRunTrigger(run.trigger);
+        const persistentGoalContext = !goalToolsAllowed
+          ? ""
+          : await goalCheckpoint(deps.prisma, {
+              spaceId: run.spaceId,
+              botId: bot.id,
+              userId: run.userId,
+            });
+        const scratchpadContext = [savedScratchpadContext, persistentGoalContext]
+          .filter(Boolean)
+          .join("\n\n");
         const semanticMemoryEnabled = Boolean(semanticMemory) && !messagingChannelRun;
         let recalledMemory = "";
         let recallSucceeded = false;
@@ -5331,6 +5352,22 @@ export function createRunExecutor(deps: ExecutorDeps) {
               tools,
             });
           }
+          if (name.startsWith("goal_")) {
+            const scope = { spaceId: run.spaceId, botId: bot.id, userId: run.userId };
+            try {
+              if (name === "goal_status") return { goals: await listGoals(deps.prisma, scope) };
+              if (name === "goal_create")
+                return finish({
+                  goal: await createGoal(deps.prisma, scope, runId, args, task.prompt),
+                });
+              if (name === "goal_update")
+                return finish({ goal: await updateGoal(deps.prisma, scope, runId, args) });
+            } catch (error) {
+              return finish({
+                error: error instanceof Error ? error.message : "Goal update failed",
+              });
+            }
+          }
           if (name === "scratchpad_list") {
             return listScratchpadItemsFromTool(deps, {
               spaceId: run.spaceId,
@@ -6582,6 +6619,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
               prompt,
               contextStrategy,
               instructions: userTurnInstructions({
+                goalToolsEnabled: goalToolsAllowed,
                 botInstructions: runIdentityInstruction(bot, run.trigger),
                 groupContext,
                 messagingContext,
@@ -6611,6 +6649,15 @@ export function createRunExecutor(deps: ExecutorDeps) {
                 .filter((instruction): instruction is string => Boolean(instruction))
                 .join("\n\n"),
               history: runtimeHistory,
+              goalContinuation: !goalToolsAllowed
+                ? undefined
+                : (attempt) =>
+                    goalContinuation(
+                      deps.prisma,
+                      { spaceId: run.spaceId, botId: bot.id, userId: run.userId },
+                      runId,
+                      attempt,
+                    ),
               currentTurnImages,
               tools,
               model: {
@@ -7355,6 +7402,9 @@ export function createRunExecutor(deps: ExecutorDeps) {
           throw new Error("Run setup failed; retrying");
         }
       } finally {
+        await settleRunGoal(deps.prisma, runId).catch((error) =>
+          getLogger().warn("Goal recovery failed", { runId, error }),
+        );
         detachShutdown?.();
         clearInterval(heartbeat);
         if (!retainComputerLease) {
@@ -7565,6 +7615,8 @@ export function selectBuiltinToolsForRun(options: {
   ).filter(
     (tool) =>
       !disabled.has(tool.name) &&
+      ((!options.groupId && !isBackgroundRunTrigger(options.trigger)) ||
+        !tool.name.startsWith("goal_")) &&
       (options.ticketBoardEnabled ||
         (tool.name !== "board_tickets" && !tool.name.startsWith("ticket_"))) &&
       (!isBackgroundRunTrigger(options.trigger) ||
@@ -7582,6 +7634,7 @@ export function selectBuiltinToolsForRun(options: {
           "task_catalog",
           "board_tickets",
         ].includes(tool.name) &&
+          !tool.name.startsWith("goal_") &&
           !tool.name.startsWith("scratchpad_") &&
           !tool.name.startsWith("ticket_"))),
   );
@@ -7835,6 +7888,7 @@ function toolUsageLine(parts: {
 
 // Ordering matters: stable blocks first, volatile ones last, so the prefix stays cacheable.
 export function userTurnInstructions(parts: {
+  goalToolsEnabled?: boolean;
   botInstructions: string;
   groupContext: string | undefined;
   messagingContext: string | undefined;
@@ -7868,7 +7922,9 @@ export function userTurnInstructions(parts: {
     parts.agentEnvironmentInstruction,
     "Work efficiently across tasks: use the smallest number of tool calls that still verifies the result; batch independent reads and consecutive browser actions when they do not depend on an intermediate result; reuse facts already returned instead of fetching them again. After a failure, inspect the result and retry at most once with a changed approach; stop if access is blocked or the same failure repeats. Keep reasoning private and do not narrate individual tool calls.",
     "Tool discovery applies across providers: a requested action may be nested behind a provider's own search, discovery, or schema tool instead of appearing as a direct tool. Keep discovery bounded: search one provider and action at a time (for example, Gmail profile, then Gmail labels), and use a small result limit. If a result says more matches exist or output is truncated, immediately retry with narrower action words; do not give up or claim a tool is unavailable. If a catalog lookup returns no direct match, try broader provider or capability words, list available sources, and use any exposed discovery tool to find the action and load its schema. An empty search is not evidence that a provider is disconnected. Say a connection or authorization failed only when a tool returns an explicit connection or authentication error; then report the specific error and stop repeating the same lookup. Verify important tool results with a follow-up read when available.",
-    "For complex requests, identify the requested outcome and observable checks before acting. Give a brief plan when useful, execute the steps, and verify each material result with the relevant tool (for example, read back a file you wrote or inspect the page after an action). An attempted action alone is not proof of success. In the final reply, distinguish completed and verified work from anything blocked or unverified. Skip formal planning for simple requests; do not reveal private reasoning.",
+    parts.goalToolsEnabled !== false && !parts.disabledBuiltinTools?.has("goal_create")
+      ? "For complex requests, use goal_create to persist the requested outcome, success criteria and steps before acting. Use goal_update throughout execution to record progress, environment facts, user constraints and verified results. Read goal_status after interruption. Never resume paused work without the user. Identify the requested outcome and observable checks before acting. Give a brief plan when useful, execute the steps, and verify each material result with the relevant tool (for example, read back a file you wrote or inspect the page after an action). An attempted action alone is not proof of success. In the final reply, distinguish completed and verified work from anything blocked or unverified. Skip formal planning for simple requests; do not reveal private reasoning."
+      : "For complex requests, identify the requested outcome and observable checks before acting. Give a brief plan when useful, execute the steps, and verify each material result with the relevant tool (for example, read back a file you wrote or inspect the page after an action). An attempted action alone is not proof of success. In the final reply, distinguish completed and verified work from anything blocked or unverified. Skip formal planning for simple requests; do not reveal private reasoning.",
     "A bot and a subagent are different. Never use both for the same request.",
     offeredBuiltinClause(
       parts.disabledBuiltinTools,

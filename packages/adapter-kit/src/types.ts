@@ -550,6 +550,8 @@ export interface AgentRunRequest {
   onToolCompleted?: (completion: AgentToolCompletion) => Promise<void> | void;
   /** Atomically claim durable user steering at the runtime's next safe turn boundary. */
   claimSteering?: (seenIds: string[]) => Promise<AgentSteeringMessage[]>;
+  /** Bounded continuation of a persisted goal; called only after the current tool loop settles. */
+  goalContinuation?: (attempt: number) => Promise<string | undefined>;
 }
 
 export interface ScriptedTurn {

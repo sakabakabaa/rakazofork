@@ -67,6 +67,7 @@ import {
   enqueueTakeoverContinuation,
   expireComputerControl,
   forgetBotSecret,
+  goalDto,
   hasActiveComputerControl,
   hostCredentialSource,
   isAutoReviewCheckerConfigured,
@@ -76,6 +77,7 @@ import {
   kickModelCredentialRefresh,
   listAvailablePiCatalog,
   listBotSecretMetadata,
+  listGoals,
   listPiCatalog,
   listScratchpadItems,
   McpOAuthBroker,
@@ -3684,6 +3686,61 @@ export function createRouter(deps: RouterDeps) {
           getLogger().error("routine testRun enqueue", error);
         });
         return { runId: run.id };
+      }),
+    },
+    goals: {
+      list: authed.goals.list.handler(async ({ context, input }) => {
+        await repos.getBot(context.actor, input.botId);
+        return listGoals(deps.prisma, {
+          spaceId: context.actor.spaceId,
+          userId: context.actor.userId,
+          botId: input.botId,
+        });
+      }),
+      control: authed.goals.control.handler(async ({ context, input }) => {
+        const scope = { spaceId: context.actor.spaceId, userId: context.actor.userId };
+        const row = await deps.prisma.taskGoal.findFirst({ where: { ...scope, id: input.goalId } });
+        if (!row) throw new IsolationError();
+        await repos.getBot(context.actor, row.botId);
+        if (["completed", "stopped"].includes(row.status))
+          throw new ORPCError("BAD_REQUEST", { message: "This goal has ended." });
+        if (input.action === "resume" && row.status === "active")
+          throw new ORPCError("CONFLICT", { message: "Goal is already active." });
+        const status =
+          input.action === "resume" ? "active" : input.action === "pause" ? "paused" : "stopped";
+        const changed = await deps.prisma.taskGoal.updateMany({
+          where: { ...scope, id: row.id, revision: input.revision },
+          data: {
+            status,
+            ...(input.action === "resume" ? { runId: null } : {}),
+            revision: { increment: 1 },
+          },
+        });
+        if (changed.count !== 1)
+          throw new ORPCError("CONFLICT", { message: "Goal changed. Refresh and try again." });
+        const target = await resolveThreadTarget(deps.prisma, context.actor, { botId: row.botId });
+        if (input.action === "resume") {
+          try {
+            if ((await modelSetup(deps, context.actor)).needsModel)
+              throw new Error("Connect a model before resuming.");
+            await assertTeachingSendAllowed(deps.prisma, context.actor.spaceId, row.botId);
+            const sent = await sendThreadMessage(deps, context.actor, target, {
+              clientNonce: `goal-resume:${row.id}:${input.revision}`,
+              text: `Resume ONLY the saved goal "${row.title}" (id ${row.id}). Read goal_status and continue its unfinished steps. Success criteria: ${row.successCriteria}. Preserve the original request and checkpoint constraints. Do not repeat verified completed steps, revive cancelled tasks, or perform unrelated earlier requests from this chat. If another task remains outstanding, leave it untouched and finish only this goal.`,
+            });
+            await deps.prisma.taskGoal.updateMany({
+              where: { id: row.id, revision: input.revision + 1, status: "active" },
+              data: { runId: sent.runId, revision: { increment: 1 } },
+            });
+          } catch (error) {
+            await deps.prisma.taskGoal.updateMany({
+              where: { id: row.id, revision: input.revision + 1, status: "active" },
+              data: { status: "paused", revision: { increment: 1 } },
+            });
+            throw error;
+          }
+        } else await stopThreadRuns(deps, context.actor, target);
+        return goalDto(await deps.prisma.taskGoal.findUniqueOrThrow({ where: { id: row.id } }));
       }),
     },
     scratchpad: {

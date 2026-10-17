@@ -751,6 +751,51 @@ export const builtinAgentTools: ConnectorTool[] = [
     readOnly: true,
   },
   {
+    name: "goal_create",
+    description:
+      "Create a persistent goal for a complex multi-step user request. Define the outcome and observable success criteria, then 1–20 concrete steps. Reuses an existing open goal; never replace one silently. Keep environment, constraints and pending work in checkpoint. Not a scheduler or permission grant.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        title: { type: "string" },
+        successCriteria: { type: "string" },
+        steps: { type: "array", items: { type: "string" }, minItems: 1, maxItems: 20 },
+        checkpoint: { type: "string" },
+      },
+      required: ["title", "successCriteria", "steps"],
+    },
+  },
+  {
+    name: "goal_status",
+    readOnly: true,
+    description:
+      "Read this bot's persistent goals, step IDs, revisions, verified outcomes and checkpoint. Call before resuming work or updating a goal. Paused or stopped goals require user resumption.",
+    inputSchema: { type: "object", properties: {} },
+  },
+  {
+    name: "goal_update",
+    description:
+      "Update a goal checkpoint or step. Use appendSteps for additional requested work, without replacing existing steps. Start a step as working before doing its work. Supply goalId and current revision from goal_status. Make goal updates sequentially, using each returned revision; never update a goal in parallel. Step states: pending, working, verifying, done, blocked, cancelled. Done requires evidence describing the observed check and verificationTool naming a successfully completed verification tool in this run. Complete the goal only when all steps are done. Mark blocked if input, permission or access is missing. Never treat an attempted action as success.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        appendSteps: { type: "array", items: { type: "string" }, maxItems: 20 },
+        goalId: { type: "string" },
+        revision: { type: "integer" },
+        checkpoint: { type: "string" },
+        status: { type: "string", enum: ["active", "blocked", "completed"] },
+        stepId: { type: "string" },
+        stepStatus: {
+          type: "string",
+          enum: ["pending", "working", "verifying", "done", "blocked", "cancelled"],
+        },
+        evidence: { type: "string" },
+        verificationTool: { type: "string" },
+      },
+      required: ["goalId", "revision"],
+    },
+  },
+  {
     name: "scratchpad_list",
     description:
       "List this bot's scratchpad / open-work items (todos and parked work). By default omits completed items.",

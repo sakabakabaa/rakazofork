@@ -215,6 +215,7 @@ model Space {
   tasks                       Task[]
   runs                        Run[]
   routines                    Routine[]
+  goals                      TaskGoal[]
   scratchpadItems             ScratchpadItem[]
   taughtSkills                TaughtSkill[]
   agentSkills                 AgentSkill[]
@@ -427,6 +428,7 @@ model Bot {
   teamChatAmbientEnabled Boolean @default(false)
   teamChatRules          String  @default("")
   routines          Routine[]
+  goals            TaskGoal[]
   scratchpadItems   ScratchpadItem[]
   taughtSkills      TaughtSkill[]
   memoryDocuments   MemoryDocument[]
@@ -1491,4 +1493,25 @@ model TicketComment {
 
   @@index([ticketId, createdAt])
   @@map("ticket_comments")
+}
+
+model TaskGoal {
+  id String @id @default(cuid())
+  spaceId String
+  space Space @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  botId String
+  bot Bot @relation(fields: [botId], references: [id], onDelete: Cascade)
+  userId String
+  title String
+  successCriteria String @db.Text
+  request String @default("") @db.Text
+  checkpoint String @default("") @db.Text
+  status String @default("active")
+  steps Json
+  revision Int @default(0)
+  runId String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  @@index([spaceId, botId, updatedAt])
+  @@map("task_goals")
 }

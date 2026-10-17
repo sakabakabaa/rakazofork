@@ -29,6 +29,28 @@ import { UnavailableModelForAuthError } from "./model-selection.js";
 import { RetiredModelCredentialError, serializeModelSecret } from "./pi-oauth.js";
 
 describe("bot tool permissions", () => {
+  it("keeps private goal tools out of groups, channels and ticket workers", () => {
+    const base = {
+      graphicalToolsAllowed: false,
+      groupId: null,
+      trigger: "user",
+      semanticMemoryEnabled: false,
+      messagingChannelRun: false,
+    };
+    expect(selectBuiltinToolsForRun(base).map((tool) => tool.name)).toContain("goal_create");
+    for (const patch of [
+      { groupId: "shared" },
+      { messagingChannelRun: true },
+      { trigger: "tickets" },
+    ]) {
+      expect(
+        selectBuiltinToolsForRun({ ...base, ...patch }).some((tool) =>
+          tool.name.startsWith("goal_"),
+        ),
+      ).toBe(false);
+    }
+  });
+
   it("never lets self-edit change disabled tools alongside an allowed field", () => {
     expect(parseUpdateBotPatch({ name: "Scout", disabledBuiltinTools: [] }, "Bot")).toEqual({
       patch: { name: "Scout" },
@@ -1018,7 +1040,7 @@ describe("userTurnInstructions", () => {
   const stableMiddle = [
     "Work efficiently across tasks: use the smallest number of tool calls that still verifies the result; batch independent reads and consecutive browser actions when they do not depend on an intermediate result; reuse facts already returned instead of fetching them again. After a failure, inspect the result and retry at most once with a changed approach; stop if access is blocked or the same failure repeats. Keep reasoning private and do not narrate individual tool calls.",
     "Tool discovery applies across providers: a requested action may be nested behind a provider's own search, discovery, or schema tool instead of appearing as a direct tool. Keep discovery bounded: search one provider and action at a time (for example, Gmail profile, then Gmail labels), and use a small result limit. If a result says more matches exist or output is truncated, immediately retry with narrower action words; do not give up or claim a tool is unavailable. If a catalog lookup returns no direct match, try broader provider or capability words, list available sources, and use any exposed discovery tool to find the action and load its schema. An empty search is not evidence that a provider is disconnected. Say a connection or authorization failed only when a tool returns an explicit connection or authentication error; then report the specific error and stop repeating the same lookup. Verify important tool results with a follow-up read when available.",
-    "For complex requests, identify the requested outcome and observable checks before acting. Give a brief plan when useful, execute the steps, and verify each material result with the relevant tool (for example, read back a file you wrote or inspect the page after an action). An attempted action alone is not proof of success. In the final reply, distinguish completed and verified work from anything blocked or unverified. Skip formal planning for simple requests; do not reveal private reasoning.",
+    "For complex requests, use goal_create to persist the requested outcome, success criteria and steps before acting. Use goal_update throughout execution to record progress, environment facts, user constraints and verified results. Read goal_status after interruption. Never resume paused work without the user. Identify the requested outcome and observable checks before acting. Give a brief plan when useful, execute the steps, and verify each material result with the relevant tool (for example, read back a file you wrote or inspect the page after an action). An attempted action alone is not proof of success. In the final reply, distinguish completed and verified work from anything blocked or unverified. Skip formal planning for simple requests; do not reveal private reasoning.",
     "A bot and a subagent are different. Never use both for the same request.",
     "create_space proposes a new privacy boundary inside the current organization. Use it when the user asks to create a space or separate data between teams or projects. It always pauses for explicit user approval; never claim the space exists before the tool succeeds.",
     "spawn_bot creates a lasting regular bot (own chat, computer, memory) that appears in the user's bot list. If the user asked to create a bot, call spawn_bot once and stop. Do not run_subagent to demo it.",
@@ -2400,6 +2422,10 @@ description: Prepare standup notes
       botSecret: { findMany: vi.fn(async () => []) },
       agentSkill: { findMany: vi.fn(async () => []) },
       scratchpadItem: { findMany: vi.fn(async () => []) },
+      taskGoal: {
+        findFirst: vi.fn(async () => null),
+        updateMany: vi.fn(async () => ({ count: 0 })),
+      },
     } as unknown as PrismaClient;
     const executor = createRunExecutor({
       prisma,
@@ -2506,6 +2532,10 @@ description: Prepare standup notes
       agentSecret: { findMany: vi.fn(async () => []) },
       agentSkill: { findMany: vi.fn(async () => []) },
       scratchpadItem: { findMany: vi.fn(async () => []) },
+      taskGoal: {
+        findFirst: vi.fn(async () => null),
+        updateMany: vi.fn(async () => ({ count: 0 })),
+      },
     } as unknown as PrismaClient;
     const executor = createRunExecutor({
       prisma,

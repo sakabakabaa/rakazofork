@@ -17,6 +17,7 @@ const fakeAgentState = vi.hoisted(() => ({
   lastSubagentResult: undefined as unknown,
   failPrompt: false,
   abortCalls: 0,
+  prompts: [] as string[],
 }));
 
 type FakeAgentTool = {
@@ -46,7 +47,8 @@ vi.mock("@earendil-works/pi-agent-core", () => ({
     }
 
     subscribe(_listener: unknown) {}
-    async prompt() {
+    async prompt(text: string) {
+      fakeAgentState.prompts.push(text);
       if (fakeAgentState.failPrompt) throw new Error("prompt failed");
       const runSubagent = this.tools.find((tool) => tool.name === "run_subagent");
       fakeAgentState.lastSubagentResult = await runSubagent?.execute(
@@ -182,6 +184,7 @@ describe("Pi agent thinking level", () => {
     fakeAgentState.subagentArgs = { name: "helper", task: "help" };
     fakeAgentState.lastSubagentResult = undefined;
     fakeAgentState.failPrompt = false;
+    fakeAgentState.prompts = [];
     vi.unstubAllEnvs();
   });
 
@@ -367,5 +370,55 @@ describe("Pi agent thinking level", () => {
 
     controller.abort();
     expect(fakeAgentState.abortCalls).toBe(0);
+  });
+});
+
+describe("persistent goal continuation", () => {
+  beforeEach(() => {
+    fakeAgentState.failPrompt = false;
+  });
+  it("continues unfinished work with the same agent and stops at the hard limit", async () => {
+    fakeAgentState.prompts = [];
+    const continueGoal = vi.fn(
+      async (_attempt: number) => "Read goal_status and finish the next step",
+    );
+    const runtime = new PiAgentRuntime();
+    for await (const _event of runtime.run(
+      {
+        botId: "b",
+        threadId: "t",
+        runId: "goal-run",
+        prompt: "Build a report",
+        instructions: "Test",
+        history: [],
+        tools: [],
+        model: { provider: "test", id: "plain-model" },
+        goalContinuation: continueGoal,
+      },
+      { operationId: "test", traceId: "test", spaceId: "w", userId: "u" },
+    )) {
+    }
+    expect(fakeAgentState.prompts).toHaveLength(4);
+    expect(continueGoal.mock.calls.map((call) => call[0])).toEqual([0, 1, 2, 3]);
+  });
+  it("ends immediately when the persisted goal is completed or paused", async () => {
+    fakeAgentState.prompts = [];
+    const runtime = new PiAgentRuntime();
+    for await (const _event of runtime.run(
+      {
+        botId: "b",
+        threadId: "t",
+        runId: "goal-run",
+        prompt: "Continue",
+        instructions: "Test",
+        history: [],
+        tools: [],
+        model: { provider: "test", id: "plain-model" },
+        goalContinuation: async () => undefined,
+      },
+      { operationId: "test", traceId: "test", spaceId: "w", userId: "u" },
+    )) {
+    }
+    expect(fakeAgentState.prompts).toEqual(["Continue"]);
   });
 });

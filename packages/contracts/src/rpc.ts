@@ -100,6 +100,7 @@ import {
   VoiceStatusSchema,
 } from "./domain.js";
 import { ComputerCommandSchema, ProductEventSchema } from "./events.js";
+import { Goal } from "./goals.js";
 import { Id, IsoDate } from "./ids.js";
 import {
   IntegrationProviderConfigSchema,
@@ -495,9 +496,7 @@ export const appContract = {
           scope: z.enum(["bot", "user"]).optional(),
         }),
       )
-      .output(
-        z.array(z.object({ path: z.string(), snippet: z.string(), score: z.number() })),
-      ),
+      .output(z.array(z.object({ path: z.string(), snippet: z.string(), score: z.number() }))),
     exportMarkdown: oc.input(z.object({ botId: Id.optional() })).output(z.string()),
     providerConfig: oc.output(SpaceMemoryConfigSchema.nullable()),
     connectProvider: oc
@@ -574,6 +573,18 @@ export const appContract = {
         }),
       )
       .output(z.object({ runId: Id })),
+  },
+  goals: {
+    list: oc.input(z.object({ botId: Id })).output(z.array(Goal)),
+    control: oc
+      .input(
+        z.object({
+          goalId: Id,
+          revision: z.number().int(),
+          action: z.enum(["pause", "resume", "stop"]),
+        }),
+      )
+      .output(Goal),
   },
   scratchpad: {
     list: oc
@@ -805,7 +816,14 @@ export const appContract = {
   messaging: {
     status: oc.output(MessagingStatusSchema),
     whatsappWeb: {
-      status: oc.output(z.object({ enabled: z.boolean(), state: z.string(), qrDataUrl: z.string().nullable(), phone: z.string().nullable() })),
+      status: oc.output(
+        z.object({
+          enabled: z.boolean(),
+          state: z.string(),
+          qrDataUrl: z.string().nullable(),
+          phone: z.string().nullable(),
+        }),
+      ),
       connect: oc.output(z.object({ ok: z.literal(true) })),
       disconnect: oc.output(z.object({ ok: z.literal(true) })),
     },

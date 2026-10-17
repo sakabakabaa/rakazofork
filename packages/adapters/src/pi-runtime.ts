@@ -613,6 +613,21 @@ export class PiAgentRuntime implements AgentRuntime {
         ]);
         try {
           await agent.prompt(initialPrompt, images?.length ? images : undefined);
+          for (
+            let attempt = 0;
+            attempt <= 3 &&
+            request.goalContinuation &&
+            !agent.state.errorMessage &&
+            !providerFailureText(agent.state.messages.at(-1)) &&
+            !signal.aborted &&
+            !host.pausePending &&
+            !host.toolCallBudget.exceeded;
+            attempt++
+          ) {
+            const continuation = await request.goalContinuation(attempt);
+            if (!continuation || attempt === 3) break;
+            await agent.prompt(continuation);
+          }
         } finally {
           try {
             await agent.waitForIdle();
@@ -926,6 +941,9 @@ export function describeToolActivity(toolName: string, args: unknown): string {
       .trim();
     return text.length > ACTIVITY_DETAIL_LIMIT ? `${text.slice(0, ACTIVITY_DETAIL_LIMIT)}…` : text;
   };
+  if (toolName === "goal_create") return `Planning goal: ${detail(record.title)}`;
+  if (toolName === "goal_update") return "Updating goal progress";
+  if (toolName === "goal_status") return "Checking goal progress";
   if (toolName === "shell") return `Running: ${detail(record.command)}`;
   if (toolName === "read_file") return `Reading ${detail(record.path)}`;
   if (toolName === "write_file") return `Writing ${detail(record.path)}`;

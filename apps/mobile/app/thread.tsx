@@ -93,6 +93,7 @@ import { ChoiceCard } from "../components/ChoiceCard";
 import { ComputerCard } from "../components/ComputerCard";
 import { ComposerReplyPreview } from "../components/composer-reply-preview";
 import { FailedSendBubble } from "../components/failed-send-bubble";
+import { GoalProgressCard } from "../components/GoalProgressCard";
 import { GlassSurface } from "../components/glass-surface";
 import type { ImageArtifactPreviewTarget } from "../components/image-artifact-viewer";
 import { InlineImageAttachment } from "../components/inline-image-attachment";
@@ -2377,6 +2378,7 @@ function Thread() {
             ))}
           </View>
         ) : null}
+        {botId && !inGroup ? <GoalProgressCard key={botId} botId={botId} /> : null}
         <ThreadComposer
           key={threadKey}
           ref={composerRef}
