@@ -4866,3 +4866,23 @@ msgstr "Stop goal"
 #: src/components/GoalProgressCard.tsx
 msgid "Could not refresh goal. Try again."
 msgstr "Could not refresh goal. Try again."
+
+#: src/components/GoalProgressCard.tsx
+msgid "Edit goal"
+msgstr "Ziel bearbeiten"
+
+#: src/components/GoalProgressCard.tsx
+msgid "Delete goal"
+msgstr "Ziel löschen"
+
+#: src/components/GoalProgressCard.tsx
+msgid "Delete this goal? This cannot be undone."
+msgstr "Dieses Ziel löschen? Dies kann nicht rückgängig gemacht werden."
+
+#: src/components/GoalProgressCard.tsx
+msgid "Success criteria"
+msgstr "Erfolgskriterien"
+
+#: src/components/GoalProgressCard.tsx
+msgid "Step {number}"
+msgstr "Schritt {number}"

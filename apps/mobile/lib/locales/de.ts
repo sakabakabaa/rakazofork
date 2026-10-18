@@ -785,4 +785,10 @@ export const DE_MESSAGES: Record<string, string> = {
     "Melde dich bei deinem bestehenden Konto an, um SSO zu verknüpfen",
   "SSO is temporarily unavailable. Try again.":
     "SSO ist vorübergehend nicht verfügbar. Versuche es erneut.",
+  "Edit goal": "Ziel bearbeiten",
+  "Delete goal": "Ziel löschen",
+  "Delete this goal? This cannot be undone.":
+    "Dieses Ziel löschen? Das kann nicht rückgängig gemacht werden.",
+  "Success criteria": "Erfolgskriterien",
+  "Step {number}": "Schritt {number}",
 };

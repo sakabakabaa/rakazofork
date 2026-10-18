@@ -764,4 +764,9 @@ export const ZH_MESSAGES: Record<string, string> = {
   "Send deletion code": "发送删除验证码",
   "Sign in to your existing account to link SSO": "请登录现有账户以关联 SSO",
   "SSO is temporarily unavailable. Try again.": "SSO 暂时不可用，请重试。",
+  "Edit goal": "编辑目标",
+  "Delete goal": "删除目标",
+  "Delete this goal? This cannot be undone.": "删除此目标？此操作无法撤销。",
+  "Success criteria": "成功标准",
+  "Step {number}": "步骤 {number}",
 };

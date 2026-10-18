@@ -85,6 +85,7 @@ import {
   modelCredentialAuthKindsForSpace,
   modelCredentialDto,
   normalizeSecretDestination,
+  OPEN_GOAL_STATUSES,
   PushSessionEndedError,
   parseModelSecret,
   persistPreparedSecret,
@@ -3741,6 +3742,76 @@ export function createRouter(deps: RouterDeps) {
           }
         } else await stopThreadRuns(deps, context.actor, target);
         return goalDto(await deps.prisma.taskGoal.findUniqueOrThrow({ where: { id: row.id } }));
+      }),
+      update: authed.goals.update.handler(async ({ context, input }) => {
+        const scope = { spaceId: context.actor.spaceId, userId: context.actor.userId };
+        const row = await deps.prisma.taskGoal.findFirst({ where: { ...scope, id: input.goalId } });
+        if (!row) throw new IsolationError();
+        await repos.getBot(context.actor, row.botId);
+        const goal = goalDto(row);
+        // Steps are the agent's record of what it verified, so the user may rename them
+        // but cannot move their status or invent evidence for them.
+        let steps = goal.steps;
+        if (input.stepTitles !== undefined) {
+          const titles = new Map(input.stepTitles.map(({ stepId, title }) => [stepId, title]));
+          if (titles.size !== input.stepTitles.length)
+            throw new ORPCError("BAD_REQUEST", { message: "A step was listed more than once." });
+          if ([...titles.keys()].some((stepId) => !steps.some((step) => step.id === stepId)))
+            throw new ORPCError("BAD_REQUEST", { message: "Step not found." });
+          steps = steps.map((step) => {
+            const title = titles.get(step.id);
+            return title === undefined || title === step.title ? step : { ...step, title };
+          });
+        }
+        const stepsChanged = steps.some((step, index) => step.title !== goal.steps[index]?.title);
+        if (input.title === undefined && input.successCriteria === undefined && !stepsChanged)
+          throw new ORPCError("BAD_REQUEST", { message: "Nothing to change." });
+        const changed = await deps.prisma.taskGoal.updateMany({
+          where: { ...scope, id: row.id, revision: input.revision },
+          data: {
+            ...(input.title !== undefined ? { title: input.title } : {}),
+            ...(input.successCriteria !== undefined
+              ? { successCriteria: input.successCriteria }
+              : {}),
+            ...(stepsChanged ? { steps } : {}),
+            revision: { increment: 1 },
+          },
+        });
+        if (changed.count !== 1)
+          throw new ORPCError("CONFLICT", { message: "Goal changed. Refresh and try again." });
+        return goalDto(await deps.prisma.taskGoal.findUniqueOrThrow({ where: { id: row.id } }));
+      }),
+      delete: authed.goals.delete.handler(async ({ context, input }) => {
+        const scope = { spaceId: context.actor.spaceId, userId: context.actor.userId };
+        const row = await deps.prisma.taskGoal.findFirst({ where: { ...scope, id: input.goalId } });
+        if (!row) throw new IsolationError();
+        await repos.getBot(context.actor, row.botId);
+        const wasOpen = OPEN_GOAL_STATUSES.includes(row.status);
+        // Claim this revision before side effects. If another tab edited the goal, do not
+        // stop its run based on stale data. The revision bump also fences a concurrent edit
+        // between the stop and delete below.
+        const claimed = await deps.prisma.taskGoal.updateMany({
+          where: { ...scope, id: row.id, revision: input.revision },
+          data: {
+            ...(wasOpen ? { status: "stopped" } : {}),
+            revision: { increment: 1 },
+          },
+        });
+        if (claimed.count !== 1)
+          throw new ORPCError("CONFLICT", { message: "Goal changed. Refresh and try again." });
+        // A deleted goal must not keep driving the bot: stop whatever run is pursuing it.
+        if (wasOpen) {
+          const target = await resolveThreadTarget(deps.prisma, context.actor, {
+            botId: row.botId,
+          });
+          await stopThreadRuns(deps, context.actor, target);
+        }
+        const removed = await deps.prisma.taskGoal.deleteMany({
+          where: { ...scope, id: row.id, revision: input.revision + 1 },
+        });
+        if (removed.count !== 1)
+          throw new ORPCError("CONFLICT", { message: "Goal changed. Refresh and try again." });
+        return { ok: true as const };
       }),
     },
     scratchpad: {

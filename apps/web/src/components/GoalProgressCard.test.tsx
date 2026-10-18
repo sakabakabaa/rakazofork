@@ -3,13 +3,21 @@ import type { Goal } from "@rakazo/contracts";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@lingui/react/macro", () => ({
   Trans: ({ children }: { children: unknown }) => children,
 }));
-const mocks = vi.hoisted(() => ({ list: vi.fn(), control: vi.fn() }));
+const mocks = vi.hoisted(() => ({
+  list: vi.fn(),
+  control: vi.fn(),
+  update: vi.fn(),
+  delete: vi.fn(),
+}));
 vi.mock("../lib/rpc", () => ({ rpc: { goals: mocks } }));
+
+beforeEach(() => vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true));
+afterEach(() => vi.unstubAllGlobals());
 
 import { GoalCard, GoalProgressCard } from "./GoalProgressCard";
 
@@ -55,6 +63,67 @@ describe("Goal card", () => {
         <GoalCard goal={{ ...goal, status: "completed" }} onControl={() => {}} />,
       ),
     ).not.toContain("Stop goal");
+  });
+  it("offers edit and delete actions", () => {
+    const onEdit = vi.fn();
+    const onDelete = vi.fn();
+    const html = renderToStaticMarkup(
+      <GoalCard goal={goal} onControl={() => {}} onEdit={onEdit} onDelete={onDelete} />,
+    );
+    expect(html).toContain("Edit goal");
+    expect(html).toContain("Delete goal");
+  });
+  it("edits goal text and deletes with the current revision", async () => {
+    mocks.list.mockResolvedValue([goal]);
+    mocks.update.mockResolvedValue({
+      ...goal,
+      title: "Updated report",
+      steps: [{ ...goal.steps[0]!, title: "Renamed step" }, goal.steps[1]!],
+      revision: 3,
+    });
+    mocks.delete.mockResolvedValue({ ok: true });
+    const node = document.createElement("div");
+    const root = createRoot(node);
+    await act(async () => root.render(<GoalProgressCard botId="bot" />));
+
+    const edit = [...node.querySelectorAll("button")].find(
+      (button) => button.textContent === "Edit goal",
+    );
+    await act(async () => edit?.click());
+    const form = node.querySelector('[data-testid="goal-edit-form"]') as HTMLFormElement;
+    const title = form.querySelector("input") as HTMLInputElement;
+    const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+    const stepTitle = form.querySelectorAll("input")[1] as HTMLInputElement;
+    await act(async () => {
+      setValue?.call(title, "Updated report");
+      title.dispatchEvent(new Event("input", { bubbles: true }));
+      title.dispatchEvent(new Event("change", { bubbles: true }));
+      setValue?.call(stepTitle, "Renamed step");
+      stepTitle.dispatchEvent(new Event("input", { bubbles: true }));
+      stepTitle.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await act(async () =>
+      form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })),
+    );
+    expect(mocks.update).toHaveBeenCalledWith({
+      goalId: "goal",
+      revision: 2,
+      title: "Updated report",
+      stepTitles: [{ stepId: "a", title: "Renamed step" }],
+    });
+    expect(node.textContent).toContain("Updated report");
+
+    const remove = [...node.querySelectorAll("button")].find(
+      (button) => button.textContent === "Delete goal",
+    );
+    await act(async () => remove?.click());
+    expect(node.querySelector('[data-testid="goal-delete-confirm"]')).not.toBeNull();
+    const confirm = [...node.querySelectorAll("button")].find(
+      (button) => button.textContent === "Delete",
+    );
+    await act(async () => confirm?.click());
+    expect(mocks.delete).toHaveBeenCalledWith({ goalId: "goal", revision: 3 });
+    await act(async () => root.unmount());
   });
   it("recovers persisted state on mount and sends revision-protected controls", async () => {
     mocks.list.mockResolvedValue([goal]);

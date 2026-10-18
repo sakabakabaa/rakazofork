@@ -1,6 +1,6 @@
 import type { Goal } from "@rakazo/contracts";
 import { useEffect, useState } from "react";
-import { AppState, Pressable, Text, View } from "react-native";
+import { Alert, AppState, Pressable, Text, TextInput, View } from "react-native";
 import { rpc } from "../lib/api";
 import { useI18n } from "../lib/i18n";
 import { useMobileTokens } from "../lib/native";
@@ -13,6 +13,10 @@ export function GoalProgressCard({ botId }: { botId: string }) {
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [draftTitle, setDraftTitle] = useState("");
+  const [draftCriteria, setDraftCriteria] = useState("");
+  const [draftSteps, setDraftSteps] = useState<Array<{ id: string; title: string }>>([]);
   useEffect(() => {
     let cancelled = false;
     let loading = false;
@@ -56,6 +60,72 @@ export function GoalProgressCard({ botId }: { botId: string }) {
       setBusy(false);
     }
   };
+  const beginEdit = () => {
+    setDraftTitle(goal.title);
+    setDraftCriteria(goal.successCriteria);
+    setDraftSteps(goal.steps.map((step) => ({ id: step.id, title: step.title })));
+    setEditing(true);
+  };
+  const stepTitles = draftSteps
+    .map((step) => ({ stepId: step.id, title: step.title.trim() }))
+    .filter(
+      (step) => step.title !== goal.steps.find((original) => original.id === step.stepId)?.title,
+    );
+  const editDirty =
+    draftTitle.trim() !== goal.title ||
+    draftCriteria.trim() !== goal.successCriteria ||
+    stepTitles.length > 0;
+  const editValid =
+    Boolean(draftTitle.trim()) &&
+    Boolean(draftCriteria.trim()) &&
+    draftSteps.every((step) => Boolean(step.title.trim())) &&
+    editDirty;
+  const saveEdit = async () => {
+    const title = draftTitle.trim();
+    const successCriteria = draftCriteria.trim();
+    if (!editValid) return;
+    setBusy(true);
+    setError(false);
+    try {
+      const updated = await rpc<Goal>("goals/update", {
+        goalId: goal.id,
+        revision: goal.revision,
+        ...(title !== goal.title ? { title } : {}),
+        ...(successCriteria !== goal.successCriteria ? { successCriteria } : {}),
+        ...(stepTitles.length ? { stepTitles } : {}),
+      });
+      setGoal(updated);
+      setEditing(false);
+    } catch {
+      setError(true);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const confirmDelete = () => {
+    Alert.alert(t("Delete goal"), t("Delete this goal? This cannot be undone."), [
+      { text: t("Cancel"), style: "cancel" },
+      {
+        text: t("Delete"),
+        style: "destructive",
+        onPress: () => {
+          void (async () => {
+            setBusy(true);
+            setError(false);
+            try {
+              await rpc<{ ok: true }>("goals/delete", { goalId: goal.id, revision: goal.revision });
+              setEditing(false);
+              setGoal(undefined);
+            } catch {
+              setError(true);
+            } finally {
+              setBusy(false);
+            }
+          })();
+        },
+      },
+    ]);
+  };
   return (
     <View
       style={{
@@ -93,6 +163,94 @@ export function GoalProgressCard({ botId }: { botId: string }) {
           ))}
           {goal.checkpoint ? (
             <Text style={{ color: tokens.mutedForeground, fontSize: 12 }}>{goal.checkpoint}</Text>
+          ) : null}
+          <View style={{ flexDirection: "row", gap: 16 }}>
+            <NativeActionButton
+              prominence="plain"
+              label={t("Edit goal")}
+              disabled={busy}
+              onPress={beginEdit}
+            />
+            <NativeActionButton
+              prominence="plain"
+              label={t("Delete goal")}
+              disabled={busy}
+              onPress={confirmDelete}
+            />
+          </View>
+          {editing ? (
+            <View
+              style={{
+                gap: 10,
+                padding: 12,
+                borderWidth: 1,
+                borderColor: tokens.border,
+                borderRadius: 8,
+              }}
+            >
+              <TextInput
+                accessibilityLabel={t("Title")}
+                value={draftTitle}
+                maxLength={200}
+                onChangeText={setDraftTitle}
+                style={{
+                  color: tokens.foreground,
+                  borderColor: tokens.border,
+                  borderWidth: 1,
+                  borderRadius: 8,
+                  padding: 8,
+                }}
+              />
+              <TextInput
+                accessibilityLabel={t("Success criteria")}
+                value={draftCriteria}
+                maxLength={2000}
+                multiline
+                onChangeText={setDraftCriteria}
+                style={{
+                  color: tokens.foreground,
+                  borderColor: tokens.border,
+                  borderWidth: 1,
+                  borderRadius: 8,
+                  padding: 8,
+                  minHeight: 72,
+                }}
+              />
+              {draftSteps.map((step, index) => (
+                <TextInput
+                  key={step.id}
+                  accessibilityLabel={t("Step {number}", { number: index + 1 })}
+                  value={step.title}
+                  maxLength={200}
+                  onChangeText={(title) =>
+                    setDraftSteps((rows) =>
+                      rows.map((row) => (row.id === step.id ? { ...row, title } : row)),
+                    )
+                  }
+                  style={{
+                    color: tokens.foreground,
+                    borderColor: tokens.border,
+                    borderWidth: 1,
+                    borderRadius: 8,
+                    padding: 8,
+                  }}
+                />
+              ))}
+              <View style={{ flexDirection: "row", gap: 16 }}>
+                <NativeActionButton
+                  prominence="plain"
+                  label={t("Cancel")}
+                  disabled={busy}
+                  onPress={() => setEditing(false)}
+                />
+                <NativeActionButton
+                  prominence="primary"
+                  label={t("Save")}
+                  disabled={busy || !editValid}
+                  onPress={() => void saveEdit()}
+                />
+              </View>
+            </View>
           ) : null}
           {!["completed", "stopped"].includes(goal.status) ? (
             <View style={{ flexDirection: "row", gap: 16 }}>

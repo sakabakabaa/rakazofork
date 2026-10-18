@@ -1,6 +1,6 @@
 import { Trans } from "@lingui/react/macro";
 import type { Goal } from "@rakazo/contracts";
-import { Button } from "@rakazo/ui-web";
+import { Button, Input, Textarea } from "@rakazo/ui-web";
 import {
   Check,
   ChevronRight,
@@ -8,17 +8,21 @@ import {
   CircleAlert,
   LoaderCircle,
   Pause,
+  Pencil,
   Play,
   Square,
   Target,
+  Trash2,
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import { rpc } from "../lib/rpc";
 
 export function GoalProgressCard({ botId }: { botId: string }) {
   const [goals, setGoals] = useState<Goal[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
   useEffect(() => {
     let disposed = false;
     let loading = false;
@@ -49,6 +53,43 @@ export function GoalProgressCard({ botId }: { botId: string }) {
   const goal =
     goals.find((goal) => ["active", "paused", "blocked"].includes(goal.status)) ?? goals[0];
   if (!goal) return null;
+  const save = async (patch: {
+    title?: string;
+    successCriteria?: string;
+    stepTitles?: Array<{ stepId: string; title: string }>;
+  }) => {
+    if (!goal) return;
+    setBusy(true);
+    setError(false);
+    try {
+      const changed = await rpc.goals.update({
+        goalId: goal.id,
+        revision: goal.revision,
+        ...patch,
+      });
+      setGoals((rows) => rows.map((row) => (row.id === changed.id ? changed : row)));
+      setEditing(false);
+    } catch {
+      setError(true);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const remove = async () => {
+    if (!goal) return;
+    setBusy(true);
+    setError(false);
+    try {
+      await rpc.goals.delete({ goalId: goal.id, revision: goal.revision });
+      setGoals((rows) => rows.filter((row) => row.id !== goal.id));
+      setEditing(false);
+      setConfirmDelete(false);
+    } catch {
+      setError(true);
+    } finally {
+      setBusy(false);
+    }
+  };
   const control = async (action: "pause" | "resume" | "stop") => {
     setBusy(true);
     setError(false);
@@ -61,7 +102,34 @@ export function GoalProgressCard({ botId }: { botId: string }) {
       setBusy(false);
     }
   };
-  return <GoalCard goal={goal} busy={busy} error={error} onControl={control} />;
+  return (
+    <>
+      <GoalCard
+        goal={goal}
+        busy={busy}
+        error={error}
+        onControl={control}
+        onEdit={() => setEditing(true)}
+        onDelete={() => setConfirmDelete(true)}
+      />
+      {editing ? (
+        <GoalEditForm
+          goal={goal}
+          busy={busy}
+          onCancel={() => setEditing(false)}
+          onSave={(patch) => void save(patch)}
+        />
+      ) : null}
+      {confirmDelete ? (
+        <GoalDeleteConfirm
+          goal={goal}
+          busy={busy}
+          onCancel={() => setConfirmDelete(false)}
+          onConfirm={() => void remove()}
+        />
+      ) : null}
+    </>
+  );
 }
 
 export function GoalCard({
@@ -69,11 +137,15 @@ export function GoalCard({
   busy = false,
   error = false,
   onControl,
+  onEdit,
+  onDelete,
 }: {
   goal: Goal;
   busy?: boolean;
   error?: boolean;
   onControl: (action: "pause" | "resume" | "stop") => void;
+  onEdit?: () => void;
+  onDelete?: () => void;
 }) {
   const completed = goal.steps.filter((step) => step.status === "done").length;
   const current = goal.steps.find((step) =>
@@ -156,6 +228,20 @@ export function GoalCard({
           {current.status}: {current.title}
         </p>
       ) : null}
+      <div className="mt-1 flex flex-wrap gap-1">
+        {onEdit ? (
+          <Button size="sm" variant="ghost" disabled={busy} onClick={onEdit}>
+            <Pencil size={12} />
+            <Trans>Edit goal</Trans>
+          </Button>
+        ) : null}
+        {onDelete ? (
+          <Button size="sm" variant="ghost" disabled={busy} onClick={onDelete}>
+            <Trash2 size={12} className="text-destructive" />
+            <Trans>Delete goal</Trans>
+          </Button>
+        ) : null}
+      </div>
       {!ended ? (
         <div className="mt-1 flex gap-1">
           <Button
@@ -188,5 +274,158 @@ export function GoalCard({
         </p>
       ) : null}
     </section>
+  );
+}
+
+/**
+ * Rewriting a goal's wording. Step titles can change, but their status and evidence stay
+ * untouched: they are the agent's record of what it actually verified.
+ */
+function GoalEditForm({
+  goal,
+  busy,
+  onCancel,
+  onSave,
+}: {
+  goal: Goal;
+  busy: boolean;
+  onCancel: () => void;
+  onSave: (patch: {
+    title?: string;
+    successCriteria?: string;
+    stepTitles?: Array<{ stepId: string; title: string }>;
+  }) => void;
+}) {
+  const inputPrefix = useId();
+  const [title, setTitle] = useState(goal.title);
+  const [successCriteria, setSuccessCriteria] = useState(goal.successCriteria);
+  const [stepTitles, setStepTitles] = useState(() =>
+    goal.steps.map((step) => ({ id: step.id, title: step.title })),
+  );
+  const trimmedTitle = title.trim();
+  const trimmedCriteria = successCriteria.trim();
+  const changedSteps = stepTitles
+    .map((step) => ({ stepId: step.id, title: step.title.trim() }))
+    .filter(
+      (step) => step.title !== goal.steps.find((original) => original.id === step.stepId)?.title,
+    );
+  const dirty =
+    trimmedTitle !== goal.title ||
+    trimmedCriteria !== goal.successCriteria ||
+    changedSteps.length > 0;
+  const valid =
+    trimmedTitle.length > 0 &&
+    trimmedCriteria.length > 0 &&
+    stepTitles.every((step) => step.title.trim().length > 0) &&
+    dirty;
+  return (
+    <form
+      className="mx-3 mt-2 rounded-xl border-border bg-card px-3 py-2 md:mx-6"
+      data-testid="goal-edit-form"
+      onSubmit={(event) => {
+        event.preventDefault();
+        if (!valid || busy) return;
+        onSave({
+          ...(trimmedTitle !== goal.title ? { title: trimmedTitle } : {}),
+          ...(trimmedCriteria !== goal.successCriteria ? { successCriteria: trimmedCriteria } : {}),
+          ...(changedSteps.length > 0 ? { stepTitles: changedSteps } : {}),
+        });
+      }}
+    >
+      <div className="block text-sm">
+        <label htmlFor={`${inputPrefix}-title`} className="text-muted-foreground">
+          <Trans>Title</Trans>
+        </label>
+        <Input
+          id={`${inputPrefix}-title`}
+          value={title}
+          maxLength={200}
+          onChange={(event) => setTitle(event.target.value)}
+          className="mt-1 h-8"
+        />
+      </div>
+      <div className="mt-2 block text-sm">
+        <label htmlFor={`${inputPrefix}-criteria`} className="text-muted-foreground">
+          <Trans>Success criteria</Trans>
+        </label>
+        <Textarea
+          id={`${inputPrefix}-criteria`}
+          value={successCriteria}
+          maxLength={2000}
+          onChange={(event) => setSuccessCriteria(event.target.value)}
+          className="mt-1 min-h-20"
+        />
+      </div>
+      <fieldset className="mt-3 space-y-2">
+        <legend className="text-sm text-muted-foreground">
+          <Trans>Steps</Trans>
+        </legend>
+        {stepTitles.map((step, index) => {
+          const id = `${inputPrefix}-step-${step.id}`;
+          return (
+            <div key={step.id} className="block text-sm">
+              <label htmlFor={id} className="sr-only">
+                <Trans>Step {index + 1}</Trans>
+              </label>
+              <Input
+                id={id}
+                value={step.title}
+                maxLength={200}
+                onChange={(event) =>
+                  setStepTitles((rows) =>
+                    rows.map((row) =>
+                      row.id === step.id ? { ...row, title: event.target.value } : row,
+                    ),
+                  )
+                }
+                className="h-8"
+              />
+            </div>
+          );
+        })}
+      </fieldset>
+      <div className="mt-2 flex justify-end gap-1">
+        <Button type="button" size="sm" variant="ghost" disabled={busy} onClick={onCancel}>
+          <Trans>Cancel</Trans>
+        </Button>
+        <Button type="submit" size="sm" disabled={!valid || busy}>
+          <Trans>Save</Trans>
+        </Button>
+      </div>
+    </form>
+  );
+}
+
+function GoalDeleteConfirm({
+  goal,
+  busy,
+  onCancel,
+  onConfirm,
+}: {
+  goal: Goal;
+  busy: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <div
+      role="alertdialog"
+      aria-label="Delete goal"
+      className="mx-3 mt-2 rounded-xl border-border bg-card px-3 py-2 md:mx-6"
+      data-testid="goal-delete-confirm"
+    >
+      <p className="text-sm">
+        <Trans>Delete this goal? This cannot be undone.</Trans>
+      </p>
+      <p className="mt-1 break-words text-xs text-muted-foreground">{goal.title}</p>
+      <div className="mt-2 flex justify-end gap-1">
+        <Button size="sm" variant="ghost" disabled={busy} onClick={onCancel}>
+          <Trans>Cancel</Trans>
+        </Button>
+        <Button size="sm" variant="destructive" disabled={busy} onClick={onConfirm}>
+          <Trans>Delete</Trans>
+        </Button>
+      </div>
+    </div>
   );
 }

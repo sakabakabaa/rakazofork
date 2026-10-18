@@ -788,4 +788,9 @@ export const RU_MESSAGES: Record<string, string> = {
   "Sign in to your existing account to link SSO":
     "Войдите в существующий аккаунт, чтобы привязать SSO",
   "SSO is temporarily unavailable. Try again.": "SSO временно недоступен. Попробуйте снова.",
+  "Edit goal": "Изменить цель",
+  "Delete goal": "Удалить цель",
+  "Delete this goal? This cannot be undone.": "Удалить эту цель? Это действие нельзя отменить.",
+  "Success criteria": "Критерии успеха",
+  "Step {number}": "Шаг {number}",
 };

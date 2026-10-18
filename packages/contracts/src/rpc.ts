@@ -585,6 +585,24 @@ export const appContract = {
         }),
       )
       .output(Goal),
+    /** A user rewriting their own goal. The agent cannot reach this: it writes steps. */
+    update: oc
+      .input(
+        z.object({
+          goalId: Id,
+          revision: z.number().int(),
+          title: z.string().trim().min(1).max(200).optional(),
+          successCriteria: z.string().trim().min(1).max(2000).optional(),
+          stepTitles: z
+            .array(z.object({ stepId: Id, title: z.string().trim().min(1).max(200) }))
+            .max(20)
+            .optional(),
+        }),
+      )
+      .output(Goal),
+    delete: oc
+      .input(z.object({ goalId: Id, revision: z.number().int() }))
+      .output(z.object({ ok: z.literal(true) })),
   },
   scratchpad: {
     list: oc
