@@ -14,6 +14,7 @@ import {
   OUTPUT_FORMATTING_GUIDANCE,
   parseUpdateBotPatch,
   persistentComputerInstruction,
+  REACTION_SILENT_REPLY_GUIDANCE,
   runNotificationsEnabled,
   selectBuiltinToolsForRun,
   settleMessageSteps,
@@ -107,7 +108,7 @@ describe("bot tool permissions", () => {
     }
   });
 
-  it("offers image_generate only when a connected model can generate images", () => {
+  it("offers generate_image only when a connected model can generate images", () => {
     const base = {
       graphicalToolsAllowed: false,
       groupId: null,
@@ -119,11 +120,11 @@ describe("bot tool permissions", () => {
       selectBuiltinToolsForRun({ ...base, ...patch }).map((tool) => tool.name);
 
     // The tool would only fail at call time without a connection, so it is not offered.
-    expect(names({})).not.toContain("image_generate");
-    expect(names({ imageGenerationAvailable: true })).toContain("image_generate");
+    expect(names({})).not.toContain("generate_image");
+    expect(names({ imageGenerationAvailable: true })).toContain("generate_image");
     expect(
-      names({ imageGenerationAvailable: true, disabledBuiltinTools: ["image_generate"] }),
-    ).not.toContain("image_generate");
+      names({ imageGenerationAvailable: true, disabledBuiltinTools: ["generate_image"] }),
+    ).not.toContain("generate_image");
   });
 
   it("never lets self-edit change disabled tools alongside an allowed field", () => {
@@ -1134,7 +1135,7 @@ describe("userTurnInstructions", () => {
   const archiveBot =
     "archive_bot safely archives a bot this bot created, and only that bot. Use it when the user asks to remove that bot or when it is finished and unused. The user can restore it or permanently delete it later. confirm_name must exactly match its name.";
   const replyGuidance =
-    "During long work, send a few short progress updates with message_user so the user can see what you are doing. Keep them brief and high-signal (a sentence or two, not a dump). Do not narrate every tool call. Thinking stays private. message_user is capped at 500 characters and will be silently cut off if you exceed it \u2014 never put your final answer, a report, or any long-form deliverable in it. Always put the complete final answer in your normal reply, never split across message_user calls, and never assume a message_user update already delivered your content.";
+    "Send progress updates only when the work will take minutes — long computer tasks or multi-step jobs — never for quick replies and never to announce that you are starting. Even then send at most a few brief updates (a sentence or two each), not one per tool call, and do not narrate routine steps. Thinking stays private. message_user is capped at 500 characters and will be silently cut off if you exceed it \u2014 never put your final answer, a report, or any long-form deliverable in it. Always put the complete final answer in your normal reply, never split across message_user calls, and never assume a message_user update already delivered your content.";
   const stableTail = [
     'When a reply contains clear numeric data and a chart would make a comparison, trend, or composition easier to understand, call render_plot and include the chart with the explanation. Choose a bar chart for category comparisons, a line chart for changes over time, and a donut only for parts of one non-overlapping whole. Do not chart uncertain or overlapping totals; preserve important caveats and use text or a table when a chart could mislead. The chart is attached inline automatically, so do not write a textual placeholder such as "[Chart: ...]". render_plot supports bar, line, scatter, histogram, heatmap, faceted and more; call it with {"help": true} before your first chart to read the full guide.',
     "When the user asks you to add or connect an MCP server (and gives you its details), use add_mcp_server. If it uses browser sign-in, an approval card appears in the chat — tell the user to click Authorize on it.",
@@ -1263,7 +1264,7 @@ describe("userTurnInstructions", () => {
     }
   });
 
-  it("mentions image_generate only when a connected model can generate images", () => {
+  it("mentions generate_image only when a connected model can generate images", () => {
     const bare = {
       ...base,
       groupContext: undefined,
@@ -1278,17 +1279,17 @@ describe("userTurnInstructions", () => {
       taughtSkillsLine: undefined,
     };
     // No connection means no tool, so advertising it would invite a call that cannot run.
-    expect(userTurnInstructions(bare).join("\n")).not.toContain("image_generate");
+    expect(userTurnInstructions(bare).join("\n")).not.toContain("generate_image");
     expect(userTurnInstructions({ ...bare, imageGenerationAvailable: true }).join("\n")).toContain(
-      "image_generate",
+      "generate_image",
     );
     expect(
       userTurnInstructions({
         ...bare,
         imageGenerationAvailable: true,
-        disabledBuiltinTools: new Set(["image_generate"]),
+        disabledBuiltinTools: new Set(["generate_image"]),
       }).join("\n"),
-    ).not.toContain("image_generate");
+    ).not.toContain("generate_image");
   });
 
   it("stops telling the model to use a disabled web tool", () => {
@@ -1367,6 +1368,29 @@ describe("userTurnInstructions", () => {
     expect(text).toContain("web_search");
     expect(text).toContain("destination_write");
     expect(text).toContain("Always put the complete final answer in your normal reply.");
+  });
+
+  it("keeps the reaction silence rule when message_user is off", () => {
+    const text = userTurnInstructions({
+      ...base,
+      replyGuidance: REACTION_SILENT_REPLY_GUIDANCE,
+      groupContext: undefined,
+      messagingContext: undefined,
+      redactedMemoryContext: undefined,
+      redactedScratchpadContext: undefined,
+      hasHistoricalContext: false,
+      agentEnvironmentInstruction: undefined,
+      botDirectory: undefined,
+      pluginLine: undefined,
+      agentSkillsLine: undefined,
+      taughtSkillsLine: undefined,
+      disabledBuiltinTools: new Set(["message_user"]),
+    })
+      .filter(Boolean)
+      .join("\n");
+    expect(text).toContain("The user reacted with an emoji to your message.");
+    expect(text).toContain("must be exactly NO_RESPONSE.");
+    expect(text).not.toContain("message_user");
   });
 
   it("keeps the credential safeguard when secret tools are off and shell stays on", () => {
@@ -1607,6 +1631,25 @@ describe("createRunExecutor", () => {
       historyCompactedUpToSeq: null,
       includeSemanticRecall: false,
     });
+  });
+
+  it("keeps the current reaction out of history because its target is supplied in the prompt", () => {
+    const messages = [
+      { id: "parent", role: "assistant", content: "Proceed?" },
+      {
+        id: "reaction",
+        role: "user",
+        content: "User reacted with 👍 to <reaction_target>Proceed?</reaction_target>",
+      },
+    ];
+    expect(
+      threadContextForRun(
+        "reaction",
+        { messages, summary: null, historyCompactedUpToSeq: null },
+        false,
+        "reaction",
+      ).messages,
+    ).toEqual([messages[0]]);
   });
 
   it("isolates routine runs from every thread-history source", () => {

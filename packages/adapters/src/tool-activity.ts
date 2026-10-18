@@ -118,7 +118,7 @@ function summarize(tool: string, args: Record<string, unknown>): string {
       return urlSummary(args.url, true);
     case "browser_navigate":
       return urlSummary(args.url, false);
-    case "image_generate":
+    case "generate_image":
       return "Generating an image";
     case "render_plot":
       return "Rendering a chart";

@@ -48,6 +48,13 @@ export const AgentSecretInputSchema = z.object({
 });
 export type AgentSecretInput = z.infer<typeof AgentSecretInputSchema>;
 
+export const InstructionVersionSchema = z.object({
+  id: Id,
+  instructions: z.string(),
+  reason: z.string(),
+  createdAt: z.string(),
+});
+
 export const BotSchema = z.object({
   id: Id,
   spaceId: Id,
@@ -55,6 +62,8 @@ export const BotSchema = z.object({
   title: z.string(),
   description: z.string(),
   instructions: z.string(),
+  selfUpdateInstructions: z.boolean().optional(),
+  instructionHistory: z.array(InstructionVersionSchema).optional(),
   color: z.string(),
   notifyOnFinish: z.boolean(),
   pinned: z.boolean(),
@@ -66,6 +75,7 @@ export const BotSchema = z.object({
   threadId: Id,
   preview: z.string(),
   status: z.string(),
+  runErrorId: Id.nullable().default(null),
   computerMode: ComputerModeSchema,
   updatedAt: z.string(),
   createdAt: z.string(),
@@ -110,7 +120,7 @@ export function truncateReplyQuote(value: string): string {
 }
 
 export const GROUP_MEMBER_MIN = 2;
-export const GROUP_MEMBER_MAX = 6;
+export const GROUP_MEMBER_MAX = 10;
 
 export const GroupSchema = z.object({
   id: Id,
@@ -144,6 +154,8 @@ export const UpdateGroupInput = z.object({
   groupId: Id,
   name: z.string().trim().min(1).max(80).optional(),
   botIds: GroupBotIds.optional(),
+  /** Reject a membership replacement when another client changed the active roster. */
+  expectedBotIds: z.array(Id).max(GROUP_MEMBER_MAX).optional(),
   pinned: z.boolean().optional(),
   sectionId: Id.nullable().optional(),
 });
@@ -181,6 +193,7 @@ export const SpaceBotSchema = BotSchema.pick({
   parentBotId: true,
   preview: true,
   status: true,
+  runErrorId: true,
   updatedAt: true,
 });
 export type SpaceBot = z.infer<typeof SpaceBotSchema>;
@@ -331,6 +344,8 @@ export const UpdateBotInput = z
     title: z.string().trim().max(BOT_TITLE_MAX_LENGTH).optional(),
     description: z.string().trim().max(BOT_DESCRIPTION_MAX_LENGTH).optional(),
     instructions: z.string().trim().max(BOT_INSTRUCTIONS_MAX_LENGTH).optional(),
+    expectedInstructions: z.string().max(BOT_INSTRUCTIONS_MAX_LENGTH).optional(),
+    selfUpdateInstructions: z.boolean().optional(),
     notifyOnFinish: z.boolean().optional(),
     color: BotAvatarValueSchema.optional(),
     pinned: z.boolean().optional(),
@@ -1040,7 +1055,7 @@ export const ModelCredentialSchema = z.object({
   maxTokens: z.number().int().min(1).max(MAX_MODEL_MAX_TOKENS).optional(),
   supportsImages: z.boolean().optional(),
   maxImagesPerPrompt: z.number().int().min(1).max(1000).optional(),
-  /** This connection's model generates images, so image_generate is offered. */
+  /** This connection's model generates images, so generate_image is offered. */
   generatesImages: z.boolean().optional(),
   thinkingLevels: z.array(ThinkingLevelSchema).optional(),
   /** Stored secret kind. Absent when the secret could not be read. */
@@ -1351,6 +1366,7 @@ export const ServerUpdateRequestSchema = z.object({
 export type ServerUpdateRequest = z.infer<typeof ServerUpdateRequestSchema>;
 
 export const MeSchema = z.object({
+  maxUploadSizeBytes: z.number().int().positive().optional(),
   ticketBoardEnabled: z.boolean(),
   userId: Id,
   email: z.string().email(),

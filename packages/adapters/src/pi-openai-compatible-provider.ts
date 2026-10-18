@@ -41,13 +41,15 @@ export function openAiCompatibleVisionModelIds(): ReadonlySet<string> {
   return declaredVisionModelIds(OPENAI_COMPATIBLE_VISION_MODELS_ENV);
 }
 
-const MAX_MODELS_RESPONSE_BYTES = 64 * 1024;
-const MAX_MODEL_IDS = 500;
+/** Custom endpoints can be aggregators; keep their discovery bounded below pinned catalogs. */
+const MAX_MODELS_RESPONSE_BYTES = 2 * 1024 * 1024;
+const MAX_MODEL_IDS = 4_000;
 /** Pinned catalogs (OpenRouter is ~1 MiB). Custom server URLs stay on the tight caps. */
 const CATALOG_MAX_MODELS_RESPONSE_BYTES = 8 * 1024 * 1024;
 const CATALOG_MAX_MODEL_IDS = 8_000;
 const MAX_MODEL_ID_LENGTH = 256;
 
+/** Select response-size and model-count caps, using larger caps for pinned catalogs. */
 function modelsProbeLimits(catalogProbe?: boolean): { maxBytes: number; maxModelIds: number } {
   return catalogProbe
     ? { maxBytes: CATALOG_MAX_MODELS_RESPONSE_BYTES, maxModelIds: CATALOG_MAX_MODEL_IDS }
@@ -94,16 +96,12 @@ function openAiCompatibleProvider(models: Model<"openai-completions">[]): Provid
     stream: (model, context, options) =>
       api.stream(model, context, {
         ...options,
-        fetch: createOpenAiCompatibleFetch(options?.fetch, resolveHostname, {
-          forcePairedDispatcher: true,
-        }),
+        fetch: createOpenAiCompatibleFetch(options?.fetch),
       }),
     streamSimple: (model, context, options) =>
       api.streamSimple(model, context, {
         ...options,
-        fetch: createOpenAiCompatibleFetch(options?.fetch, resolveHostname, {
-          forcePairedDispatcher: true,
-        }),
+        fetch: createOpenAiCompatibleFetch(options?.fetch),
       }),
   };
   return createProvider({
@@ -175,7 +173,7 @@ function requestCarriesAuthorization(input: RequestInfo | URL, init?: RequestIni
 export function createOpenAiCompatibleFetch(
   baseFetch: typeof globalThis.fetch = dispatcherFetch,
   resolve: ResolveHostname = resolveHostname,
-  opts?: { allowPublic?: boolean; forcePairedDispatcher?: boolean },
+  opts?: { allowPublic?: boolean },
 ): typeof globalThis.fetch {
   return async (input, init) => {
     const rawUrl = input instanceof Request ? input.url : String(input);
@@ -192,14 +190,9 @@ export function createOpenAiCompatibleFetch(
             connect: { lookup: createOpenAiCompatibleLookup(url, resolve) },
           })
         : undefined;
-    // Node's fetch rejects this package Agent. The provider runtime forces
-    // the paired package fetch for pinned hosts; direct callers can retain a
-    // custom fetch for tests and local IP endpoints.
-    const transport = dispatcher
-      ? opts?.forcePairedDispatcher
-        ? dispatcherFetch
-        : fetchPairedWithDispatcher(baseFetch)
-      : baseFetch;
+    // Node's fetch rejects this package Agent. Pair them only when the
+    // dispatcher is attached; a caller-supplied fetch stays in charge.
+    const transport = dispatcher ? fetchPairedWithDispatcher(baseFetch) : baseFetch;
     try {
       const response = await transport(url, {
         ...(await requestInitFor(input, init)),

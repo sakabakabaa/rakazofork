@@ -67,7 +67,7 @@ describe("toolActivitySummary", () => {
   });
 
   it("uses fixed phrases where there is nothing safe to quote", () => {
-    expect(toolActivitySummary("image_generate", { prompt: "a cat" })).toBe("Generating an image");
+    expect(toolActivitySummary("generate_image", { prompt: "a cat" })).toBe("Generating an image");
     expect(toolActivitySummary("render_plot", { name: "sales" })).toBe("Rendering a chart");
     expect(toolActivitySummary("computer_observe", {})).toBe("Looking at the screen");
     expect(toolActivitySummary("computer_act", { actions: [] })).toBe("Operating the computer");

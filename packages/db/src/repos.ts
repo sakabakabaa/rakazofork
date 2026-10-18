@@ -1,5 +1,5 @@
 import type { Actor, Bot, BotSection, MessageBlock, SpaceBot } from "@rakazo/contracts";
-import { BOT_COLORS } from "@rakazo/contracts";
+import { BOT_COLORS, InstructionVersionSchema } from "@rakazo/contracts";
 import { BACKGROUND_RUN_TRIGGERS, isBackgroundRunTrigger, userVisibleMessages } from "@rakazo/core";
 import type { PrismaClient } from "./client.js";
 import type { ComputerMode } from "./computers.js";
@@ -7,7 +7,7 @@ import { ensureComputerRecord, parseComputerMode } from "./computers.js";
 import { createThreadMessageInTransaction } from "./messages.js";
 import { BotSectionNameConflictError, IsolationError } from "./scope.js";
 import { lockSpaceForContentCreation } from "./spaces.js";
-import { activeRunSelection, previewFromBlocks } from "./thread-listing.js";
+import { activeRunSelection, latestBotRunSelection, previewFromBlocks } from "./thread-listing.js";
 import { withTransactionRetry } from "./transaction-retry.js";
 
 /** Newest messages loaded for sidebar preview; enough to skip a short peer-run tail. */
@@ -25,6 +25,26 @@ function isSpawnKeyConflict(error: unknown): boolean {
   return fields.some((field) => field === "spawnKey" || field.includes("spawnKey"));
 }
 
+function rosterRunErrorId(
+  latestRun: { id: string; status: string } | undefined,
+  activeRun: { status: string } | undefined,
+): string | null {
+  if (
+    latestRun?.status !== "failed" ||
+    activeRun?.status === "waiting_input" ||
+    activeRun?.status === "waiting_takeover"
+  ) {
+    return null;
+  }
+  return latestRun.id;
+}
+
+// Roster rows show when the chat last moved. Bot.updatedAt also moves on settings, pin,
+// section and reorder writes, so the newest message's time wins when the chat has one.
+function rosterUpdatedAt(newestMessage: { createdAt: Date } | undefined, botUpdatedAt: Date) {
+  return newestMessage?.createdAt ?? botUpdatedAt;
+}
+
 function mapBot(
   bot: {
     id: string;
@@ -33,6 +53,8 @@ function mapBot(
     title: string;
     description: string;
     instructions: string;
+    selfUpdateInstructions?: boolean;
+    instructionHistory?: unknown;
     color: string;
     notifyOnFinish: boolean;
     pinned: boolean;
@@ -57,6 +79,8 @@ function mapBot(
   },
   preview = "",
   status = "idle",
+  runErrorId: string | null = null,
+  updatedAt: Date = bot.updatedAt,
 ): Bot {
   if (!bot.thread) {
     throw new IsolationError("Bot is missing its thread");
@@ -68,6 +92,8 @@ function mapBot(
     title: bot.title,
     description: bot.description,
     instructions: bot.instructions,
+    selfUpdateInstructions: bot.selfUpdateInstructions ?? false,
+    instructionHistory: InstructionVersionSchema.array().parse(bot.instructionHistory ?? []),
     color: bot.color,
     notifyOnFinish: bot.notifyOnFinish,
     pinned: bot.pinned,
@@ -79,9 +105,10 @@ function mapBot(
     threadId: bot.thread.id,
     preview,
     status,
+    runErrorId,
     computerMode: bot.computer ? parseComputerMode(bot.computer.scope) : "team",
     createdAt: bot.createdAt.toISOString(),
-    updatedAt: bot.updatedAt.toISOString(),
+    updatedAt: updatedAt.toISOString(),
     voiceId: bot.voiceId ?? null,
     autoSpeak: bot.autoSpeak ?? false,
     modelProvider: bot.modelProvider ?? null,
@@ -140,8 +167,9 @@ export function createRepos(prisma: PrismaClient) {
             messages: {
               orderBy: { seq: "desc" },
               take: 1,
-              select: { blocks: true },
+              select: { blocks: true, createdAt: true },
             },
+            runs: latestBotRunSelection,
           },
         },
         runs: activeRunSelection,
@@ -163,7 +191,8 @@ export function createRepos(prisma: PrismaClient) {
         parentBotId: bot.parentBotId,
         preview: previewFromBlocks(bot.thread.messages[0]?.blocks),
         status: bot.runs[0]?.status ?? "idle",
-        updatedAt: bot.updatedAt.toISOString(),
+        runErrorId: rosterRunErrorId(bot.thread.runs[0], bot.runs[0]),
+        updatedAt: rosterUpdatedAt(bot.thread.messages[0], bot.updatedAt).toISOString(),
       };
     });
   }
@@ -289,6 +318,7 @@ export function createRepos(prisma: PrismaClient) {
           thread: {
             include: {
               messages: { orderBy: { seq: "desc" }, take: SIDEBAR_PREVIEW_MESSAGE_WINDOW },
+              runs: latestBotRunSelection,
             },
           },
           runs: activeRunSelection,
@@ -328,6 +358,7 @@ export function createRepos(prisma: PrismaClient) {
       return Promise.all(
         bots.map(async (bot) => {
           let messages = bot.thread?.messages ?? [];
+          const updatedAt = rosterUpdatedAt(messages[0], bot.updatedAt);
           let preview = "";
           for (let attempt = 0; attempt < 5; attempt++) {
             const windowRunIds = [
@@ -359,7 +390,13 @@ export function createRepos(prisma: PrismaClient) {
             });
             if (messages.length === 0) break;
           }
-          return mapBot(bot, preview, bot.runs[0]?.status ?? "idle");
+          return mapBot(
+            bot,
+            preview,
+            bot.runs[0]?.status ?? "idle",
+            rosterRunErrorId(bot.thread?.runs[0], bot.runs[0]),
+            updatedAt,
+          );
         }),
       );
     },

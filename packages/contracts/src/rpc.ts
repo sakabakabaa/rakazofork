@@ -4,7 +4,6 @@ import { AiConsentQuerySchema, AiConsentStatusSchema } from "./ai-consent.js";
 import {
   ARTIFACT_DESCRIPTION_MAX_LENGTH,
   ARTIFACT_NAME_MAX_LENGTH,
-  ATTACHMENT_MAX_BASE64_LENGTH,
   ATTACHMENT_MAX_COUNT,
 } from "./attachments.js";
 import {
@@ -297,6 +296,16 @@ export const appContract = {
     duplicate: oc.input(botId).output(BotSchema),
     reorder: oc.input(ReorderBotsInput).output(z.object({ ok: z.literal(true) })),
     update: oc.input(UpdateBotInput).output(BotSchema),
+    restoreInstructions: oc
+      .input(
+        z.object({
+          botId: Id,
+          versionId: Id,
+          expectedInstructions: z.string(),
+          undo: z.boolean().optional(),
+        }),
+      )
+      .output(BotSchema),
     setComputer: oc.input(z.object({ botId: Id, mode: ComputerModeSchema })).output(BotSchema),
     archive: oc.input(botId).output(z.object({ ok: z.literal(true) })),
     restore: oc.input(botId).output(z.object({ ok: z.literal(true) })),
@@ -373,7 +382,7 @@ export const appContract = {
           clientNonce: z.string().min(1).max(200),
         }),
       )
-      .output(z.object({ ok: z.literal(true) })),
+      .output(z.object({ ok: z.literal(true), runIds: z.array(Id).optional() })),
     stop: oc.input(threadTarget).output(z.object({ ok: z.literal(true) })),
     followUp: oc
       .input(
@@ -404,6 +413,8 @@ export const appContract = {
           runId: Id,
           messageId: Id,
           answer: z.string().min(1),
+          /** Carries the call id for an answer spoken during a call. */
+          clientNonce: z.string().min(1).max(200).optional(),
           /** Only for a login card; `answer` carries its password. */
           username: z.string().min(1).max(512).optional(),
         }),
@@ -458,7 +469,7 @@ export const appContract = {
         z.object({
           botId: Id,
           path: z.string().min(1),
-          contentBase64: z.string().max(ATTACHMENT_MAX_BASE64_LENGTH),
+          contentBase64: z.string(),
         }),
       )
       .output(z.object({ ok: z.literal(true) })),
@@ -915,7 +926,9 @@ export const appContract = {
             name: z.string().min(1).max(ARTIFACT_NAME_MAX_LENGTH),
             description: z.string().max(ARTIFACT_DESCRIPTION_MAX_LENGTH).optional(),
             mimeType: z.string().min(1),
-            contentBase64: z.string().min(1).max(ATTACHMENT_MAX_BASE64_LENGTH),
+            contentBase64: z.string().min(1),
+            /** Unique per upload; a retry with the same nonce returns the artifact it created. */
+            clientNonce: z.string().min(1).max(200).optional(),
           }),
         ),
       )
