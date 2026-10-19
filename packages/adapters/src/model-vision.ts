@@ -8,7 +8,18 @@ import {
   registerOpenAiCompatibleCatalog,
 } from "./pi-openai-compatible-provider.js";
 
-/** Computer tools whose results include screenshots for the model. */
+/**
+ * Computer tools whose whole purpose is to show the model pixels.
+ *
+ * Only observation is gated on vision. Driving the computer does not require seeing it: an
+ * action tool returns a text description of what changed, so a text-only model can still
+ * click, type, open files and launch applications. Gating those on vision used to remove
+ * the entire computer from a text-only model, which is why routine runs pinned to such a
+ * model could not operate the computer at all.
+ */
+export const VISION_REQUIRED_COMPUTER_TOOLS = new Set(["computer_observe"]);
+
+/** Computer tools that attach a screenshot when the model can see one. */
 export const IMAGE_RETURNING_COMPUTER_TOOLS = new Set([
   "computer_observe",
   "computer_act",
@@ -109,10 +120,21 @@ export function modelAcceptsImageInput(
   return Boolean(model?.input.includes("image"));
 }
 
+/**
+ * Drop the computer tools this run cannot use.
+ *
+ * Two different limits, deliberately separated:
+ * - No graphical computer at all: every screen tool goes, because there is no screen.
+ * - A graphical computer but a text-only model: only observation goes. Action tools stay and
+ *   degrade to a text description, so the model can still operate the computer.
+ */
 export function filterImageReturningComputerTools<T extends { name: string }>(
   tools: T[],
-  acceptsImages: boolean,
+  options: { graphicalAllowed: boolean; acceptsImages: boolean },
 ): T[] {
-  if (acceptsImages) return tools;
-  return tools.filter((tool) => !IMAGE_RETURNING_COMPUTER_TOOLS.has(tool.name));
+  if (!options.graphicalAllowed) {
+    return tools.filter((tool) => !IMAGE_RETURNING_COMPUTER_TOOLS.has(tool.name));
+  }
+  if (options.acceptsImages) return tools;
+  return tools.filter((tool) => !VISION_REQUIRED_COMPUTER_TOOLS.has(tool.name));
 }

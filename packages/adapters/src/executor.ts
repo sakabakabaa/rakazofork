@@ -295,10 +295,10 @@ import {
 } from "./model-selection.js";
 import {
   filterImageReturningComputerTools,
-  IMAGE_RETURNING_COMPUTER_TOOLS,
   MODEL_CANNOT_SEE_MESSAGE,
   modelAcceptsImageInput,
   modelIdSupportsImages,
+  VISION_REQUIRED_COMPUTER_TOOLS,
 } from "./model-vision.js";
 import type { CodexLiveCatalog } from "./pi-codex-catalog.js";
 import { codexLiveListsModel } from "./pi-codex-catalog.js";
@@ -4422,7 +4422,8 @@ export function createRunExecutor(deps: ExecutorDeps) {
         const callEndRun = run.trigger === "call_end";
         const callClientNonceForRun = callEndRun ? run.clientNonce : sourceClientNonce;
         const voiceCall = callEndRun || isCallClientNonce(sourceClientNonce);
-        const graphicalToolsAllowed = graphical && acceptsImages && !heldForTakeover;
+        // Vision is tracked separately: a text-only model can still drive the computer.
+        const graphicalToolsAllowed = graphical && !heldForTakeover;
         const pageBrowserAllowed =
           graphical && browser.describe().capabilities.page && !heldForTakeover;
         const disabledBuiltinTools = disabledBuiltinToolSet(bot.disabledBuiltinTools);
@@ -4446,6 +4447,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
             messagingChannelRun,
             voiceCall,
             imageGenerationAvailable,
+            acceptsImages,
             routineRun: Boolean(run.routineId),
             disabledBuiltinTools: bot.disabledBuiltinTools,
           }),
@@ -4656,12 +4658,10 @@ export function createRunExecutor(deps: ExecutorDeps) {
             visualActionKey,
           );
           unchangedVisualStreak = guard.streak;
-          const result = observationToolResult(
-            observation,
-            note,
-            lastComputerFrameId,
-            visualActionKey ? { unchangedVisualCount: guard.streak.count } : undefined,
-          );
+          const result = observationToolResult(observation, note, lastComputerFrameId, {
+            includeImage: acceptsImages,
+            ...(visualActionKey ? { unchangedVisualCount: guard.streak.count } : {}),
+          });
           lastComputerFrameId = observation.frameId;
           return result;
         };
@@ -4717,7 +4717,9 @@ export function createRunExecutor(deps: ExecutorDeps) {
           if (PAGE_BROWSER_TOOL_NAMES.has(name) && !pageBrowserAllowed) {
             return { error: "Page browser is unavailable on this computer." };
           }
-          if (IMAGE_RETURNING_COMPUTER_TOOLS.has(name) && !acceptsImages) {
+          // Only observation needs vision. Action tools return a text description instead,
+          // so a text-only model can still drive the computer.
+          if (VISION_REQUIRED_COMPUTER_TOOLS.has(name) && !acceptsImages) {
             return { error: MODEL_CANNOT_SEE_MESSAGE };
           }
           let connectorCall: ConnectorCall = {
@@ -8780,6 +8782,11 @@ export function selectBuiltinToolsForRun(options: {
   voiceCall?: boolean;
   /** A connected model declares image generation, so generate_image can run. */
   imageGenerationAvailable?: boolean;
+  /**
+   * Whether this run's model can see images. Defaults to true for callers that do not
+   * track it; the executor always passes the resolved value.
+   */
+  acceptsImages?: boolean;
   /** Routine runs only: the tool writes state keyed by the routine, so it needs one. */
   routineRun?: boolean;
   /** Built-in names this bot turned off. Unknown names are ignored. */
@@ -8791,7 +8798,10 @@ export function selectBuiltinToolsForRun(options: {
       filterBuiltinToolsForRun(
         filterBuiltinToolsForThread(
           filterPageBrowserTools(
-            filterImageReturningComputerTools(builtinAgentTools, options.graphicalToolsAllowed),
+            filterImageReturningComputerTools(builtinAgentTools, {
+              graphicalAllowed: options.graphicalToolsAllowed,
+              acceptsImages: options.acceptsImages ?? true,
+            }),
             options.pageBrowserAllowed ?? options.graphicalToolsAllowed,
           ),
           options.groupId,
@@ -8940,14 +8950,14 @@ export function persistentComputerInstruction(options: {
   const shell = builtinOffered(disabled, "shell");
   if (files && shell) {
     return options.graphical
-      ? `You have a persistent computer filesystem and shell. ${MODEL_CANNOT_SEE_MESSAGE} Desktop observe and act tools are unavailable until a vision-capable model is selected. Use the file tools and shell.`
+      ? `You have a persistent computer filesystem and shell. ${MODEL_CANNOT_SEE_MESSAGE} computer_observe is unavailable, so act from the text description each action returns, or use the file tools and shell.`
       : "You have a persistent sandbox filesystem and shell. This backend does not provide model-visible graphical control, so use the file tools and shell.";
   }
   const useTools = fileAndShellClause(disabled);
   const toolSentence = useTools ? ` ${useTools}` : "";
   const capabilities = files ? " filesystem" : shell ? " shell" : "";
   if (options.graphical) {
-    return `You have a persistent computer${capabilities}. ${MODEL_CANNOT_SEE_MESSAGE} Desktop observe and act tools are unavailable until a vision-capable model is selected.${toolSentence}`;
+    return `You have a persistent computer${capabilities}. ${MODEL_CANNOT_SEE_MESSAGE} computer_observe is unavailable, so act from the text description each action returns.${toolSentence}`;
   }
   return `You have a persistent sandbox${capabilities}. This backend does not provide model-visible graphical control.${toolSentence}`;
 }

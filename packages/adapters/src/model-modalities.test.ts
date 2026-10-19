@@ -69,7 +69,12 @@ describe("operator-declared vision modalities", () => {
       );
       const tools = [{ name: "computer_observe" }, { name: "computer_act" }, { name: "bash" }];
       const accepts = modelAcceptsImageInput(OPENAI_COMPATIBLE_PROVIDER_ID, "gpt4o-vision");
-      expect(filterImageReturningComputerTools(tools, accepts).map((t) => t.name)).toEqual([
+      expect(
+        filterImageReturningComputerTools(tools, {
+          graphicalAllowed: true,
+          acceptsImages: accepts,
+        }).map((t) => t.name),
+      ).toEqual([
         "computer_observe",
         "computer_act",
         "bash",
@@ -84,7 +89,12 @@ describe("operator-declared vision modalities", () => {
       );
       const tools = [{ name: "computer_observe" }, { name: "bash" }];
       const accepts = modelAcceptsImageInput(OPENAI_COMPATIBLE_PROVIDER_ID, "gpt4o-vision");
-      expect(filterImageReturningComputerTools(tools, accepts).map((t) => t.name)).toEqual([
+      expect(
+        filterImageReturningComputerTools(tools, {
+          graphicalAllowed: true,
+          acceptsImages: accepts,
+        }).map((t) => t.name),
+      ).toEqual([
         "bash",
       ]);
     });

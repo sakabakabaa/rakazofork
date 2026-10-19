@@ -63,10 +63,26 @@ describe("model vision gating for computer tools", () => {
     expect(modelIdSupportsImages(enabled, "text-model")).toBe(false);
   });
 
-  it("omits image-returning computer tools for text-only models", () => {
-    const names = filterImageReturningComputerTools(builtinAgentTools, false).map(
-      (tool) => tool.name,
-    );
+  it("keeps computer action tools for a text-only model and drops only observation", () => {
+    const names = filterImageReturningComputerTools(builtinAgentTools, {
+      graphicalAllowed: true,
+      acceptsImages: false,
+    }).map((tool) => tool.name);
+    // Acting does not need vision: the result carries a text description instead.
+    expect(names).toContain("computer_act");
+    expect(names).toContain("open_path");
+    expect(names).toContain("launch_app");
+    // Observation exists to show pixels, so it is withheld.
+    expect(names).not.toContain("computer_observe");
+    expect(names).toContain("shell");
+    expect(names).toContain("list_files");
+  });
+
+  it("drops every screen tool when there is no graphical computer", () => {
+    const names = filterImageReturningComputerTools(builtinAgentTools, {
+      graphicalAllowed: false,
+      acceptsImages: true,
+    }).map((tool) => tool.name);
     for (const name of IMAGE_RETURNING_COMPUTER_TOOLS) {
       expect(names).not.toContain(name);
     }
@@ -75,9 +91,10 @@ describe("model vision gating for computer tools", () => {
   });
 
   it("keeps image-returning computer tools for vision models", () => {
-    const names = filterImageReturningComputerTools(builtinAgentTools, true).map(
-      (tool) => tool.name,
-    );
+    const names = filterImageReturningComputerTools(builtinAgentTools, {
+      graphicalAllowed: true,
+      acceptsImages: true,
+    }).map((tool) => tool.name);
     expect(names).toEqual(builtinAgentTools.map((tool) => tool.name));
     expect(names).toContain("computer_observe");
     expect(names).toContain("computer_act");

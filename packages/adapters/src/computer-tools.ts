@@ -18,9 +18,18 @@ export type UnchangedVisualStreak = {
   count: number;
 };
 
+/** Told to a text-only model so it does not ask for a screenshot it cannot receive. */
+export const TEXT_ONLY_OBSERVATION_NOTE =
+  "This model cannot see screenshots, so the screen is described above instead. Act on the described window and coordinates; ask for a vision-capable model if visual judgement is essential.";
+
 export type ObservationToolOptions = {
   /** Consecutive identical visual actions that left this frame unchanged. */
   unchangedVisualCount?: number;
+  /**
+   * Whether to attach the screenshot. A text-only model cannot use it, so the result falls
+   * back to the text description instead of failing the action.
+   */
+  includeImage?: boolean;
 };
 
 export function parseComputerActions(value: unknown): ComputerAction[] {
@@ -110,14 +119,17 @@ export function observationToolResult(
       ? ` (screen unchanged). ${PREVIOUS_SCREENSHOT_VALID} ${visualLoopGuidance(unchangedVisualCount)}`
       : ` (screen unchanged). ${PREVIOUS_SCREENSHOT_VALID}`
     : "";
+  // A text-only model still learns what the action did and what is on screen from the
+  // description, so the image is omitted rather than the action being refused.
+  const includeImage = options?.includeImage ?? true;
   return {
     kind: "agent_tool_result",
     content: [
       {
         type: "text",
-        text: `${note}${status}\n${JSON.stringify(details)}`,
+        text: `${note}${status}\n${JSON.stringify(details)}${includeImage ? "" : `\n${TEXT_ONLY_OBSERVATION_NOTE}`}`,
       },
-      ...(unchanged
+      ...(unchanged || !includeImage
         ? []
         : [
             {

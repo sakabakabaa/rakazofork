@@ -460,6 +460,23 @@ describe("run tool selection", () => {
     expect(withoutPage).toEqual(expect.arrayContaining(["computer_observe", "computer_act"]));
   });
 
+  it("keeps computer action tools for a text-only model so a routine can still drive it", () => {
+    const names = selectBuiltinToolsForRun({
+      graphicalToolsAllowed: true,
+      pageBrowserAllowed: true,
+      groupId: null,
+      trigger: "routine",
+      semanticMemoryEnabled: false,
+      messagingChannelRun: false,
+      acceptsImages: false,
+    }).map((tool) => tool.name);
+    // A routine pinned to a text-only model used to lose the whole computer.
+    expect(names).toContain("computer_act");
+    expect(names).toContain("open_path");
+    expect(names).toContain("launch_app");
+    expect(names).not.toContain("computer_observe");
+  });
+
   it("withholds schedule creation only from routine-triggered runs", () => {
     expect(toolNames("routine")).not.toContain("schedule_create");
     expect(toolNames("routine")).toContain("task_catalog");
