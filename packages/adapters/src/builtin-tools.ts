@@ -825,6 +825,63 @@ export const builtinAgentTools: ConnectorTool[] = [
     },
   },
   {
+    name: "routine_state_update",
+    description:
+      "Save this routine's progress between runs. Only available inside a scheduled routine. Record a checkpoint only after the work is verified: name in verifiedBy the tools that already succeeded in this run and prove the step. Never advance a checkpoint on an attempt alone. Pass an empty string to clear unresolvedIssue once it is resolved.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        checkpoint: {
+          type: "object",
+          description:
+            'Structured cursor for this routine\'s domain, e.g. {"lastProcessedMessageId": "18f2"}. Flat fields only; the next run continues from here.',
+          additionalProperties: { type: ["string", "number", "boolean", "null"] },
+        },
+        checkpointNote: {
+          type: "string",
+          description: "What the checkpoint means, in one short sentence.",
+        },
+        verifiedNotes: {
+          type: "string",
+          description: "Facts proven by tool results that the next run should trust.",
+        },
+        unresolvedIssue: {
+          type: "string",
+          description: "A blocker the next run must not rediscover. Empty string clears it.",
+        },
+        verifiedBy: {
+          type: "array",
+          items: { type: "string" },
+          maxItems: 8,
+          description:
+            "Tool names that already succeeded in this run and prove the checkpoint. Required when advancing a checkpoint.",
+        },
+      },
+      required: ["verifiedBy"],
+    },
+  },
+  {
+    name: "routine_guidance_propose",
+    description:
+      "Propose one small improvement to this routine's learned guidance, based only on evidence from this run. Only available inside a scheduled routine. The user reviews and approves it before it takes effect, so propose at most one per run and only when a real failure or repeated friction proves it is needed. Never propose changes to the routine's goal, permissions, or which external actions it takes.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        text: {
+          type: "string",
+          maxLength: 400,
+          description:
+            'One imperative sentence added to future runs, e.g. "Check Gmail access first; if it fails, stop and report it."',
+        },
+        reason: {
+          type: "string",
+          description: "The evidence from this run that justifies it.",
+        },
+      },
+      required: ["text", "reason"],
+    },
+  },
+  {
     name: "scratchpad_list",
     description:
       "List this bot's scratchpad / open-work items (todos and parked work). By default omits completed items.",

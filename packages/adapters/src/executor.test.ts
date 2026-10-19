@@ -1753,6 +1753,129 @@ describe("createRunExecutor", () => {
     );
   });
 
+  it("runs a background routine in its own thread and reuses it", async () => {
+    const scheduledAt = new Date(Date.now() - 1_000);
+    const taskCreate = vi.fn(async () => ({ id: "task-1" }));
+    const runCreate = vi.fn(async () => ({ id: "run-1" }));
+    function prismaFor(existingThread: { id: string } | null) {
+      return {
+        routine: {
+          findUnique: vi.fn(async () => ({
+            id: "routine-1",
+            spaceId: "ws-1",
+            botId: "bot-1",
+            userId: "user-1",
+            name: "Inbox sweep",
+            prompt: "sweep",
+            crons: ["0 9 * * *"],
+            timezone: "UTC",
+            active: true,
+            nextRunAt: scheduledAt,
+            threadId: null,
+            threadMode: "background",
+          })),
+        },
+        bot: { findUnique: vi.fn(async () => ({ id: "bot-1", thread: { id: "bot-thread" } })) },
+        thread: {
+          findFirst: vi.fn(async () => existingThread),
+          create: vi.fn(async () => ({ id: "routine-thread" })),
+        },
+        agentSkill: { findMany: vi.fn(async () => []) },
+        routineGuidance: { findFirst: vi.fn(async () => null) },
+        $transaction: vi.fn(async (callback: (tx: unknown) => Promise<unknown>) =>
+          callback({
+            routine: {
+              updateMany: vi.fn(async () => ({ count: 1 })),
+              findUnique: vi.fn(async () => ({
+                modelProvider: null,
+                modelId: null,
+                thinkingLevel: null,
+              })),
+            },
+            task: { create: taskCreate },
+            run: { create: runCreate },
+          }),
+        ),
+      } as unknown as PrismaClient;
+    }
+    const makeExecutor = (prisma: PrismaClient) =>
+      createRunExecutor({
+        prisma,
+        jobs: { enqueue: vi.fn(async () => undefined), cancel: vi.fn(async () => undefined) },
+        events: { append: vi.fn(async () => undefined) },
+      } as unknown as Parameters<typeof createRunExecutor>[0]);
+
+    const reused = prismaFor({ id: "routine-thread" });
+    await makeExecutor(reused).wakeRoutine("routine-1", scheduledAt.toISOString());
+    expect(taskCreate).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ threadId: "routine-thread" }) }),
+    );
+    // An existing background thread is reused rather than creating a second one.
+    expect(
+      (reused.thread as unknown as { create: unknown }).create,
+    ).not.toHaveBeenCalled();
+
+    taskCreate.mockClear();
+    const fresh = prismaFor(null);
+    await makeExecutor(fresh).wakeRoutine("routine-1", scheduledAt.toISOString());
+    expect(taskCreate).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ threadId: "routine-thread" }) }),
+    );
+    expect((fresh.thread as unknown as { create: unknown }).create).toHaveBeenCalledOnce();
+  });
+
+  it("keeps a main-chat routine in the bot's own thread", async () => {
+    const scheduledAt = new Date(Date.now() - 1_000);
+    const taskCreate = vi.fn(async () => ({ id: "task-1" }));
+    const prisma = {
+      routine: {
+        findUnique: vi.fn(async () => ({
+          id: "routine-1",
+          spaceId: "ws-1",
+          botId: "bot-1",
+          userId: "user-1",
+          name: "Inbox sweep",
+          prompt: "sweep",
+          crons: ["0 9 * * *"],
+          timezone: "UTC",
+          active: true,
+          nextRunAt: scheduledAt,
+          threadId: null,
+          threadMode: "main",
+        })),
+      },
+      bot: { findUnique: vi.fn(async () => ({ id: "bot-1", thread: { id: "bot-thread" } })) },
+      thread: { findFirst: vi.fn(async () => null), create: vi.fn() },
+      agentSkill: { findMany: vi.fn(async () => []) },
+      routineGuidance: { findFirst: vi.fn(async () => null) },
+      $transaction: vi.fn(async (callback: (tx: unknown) => Promise<unknown>) =>
+        callback({
+          routine: {
+            updateMany: vi.fn(async () => ({ count: 1 })),
+            findUnique: vi.fn(async () => ({
+              modelProvider: null,
+              modelId: null,
+              thinkingLevel: null,
+            })),
+          },
+          task: { create: taskCreate },
+          run: { create: vi.fn(async () => ({ id: "run-1" })) },
+        }),
+      ),
+    } as unknown as PrismaClient;
+    const executor = createRunExecutor({
+      prisma,
+      jobs: { enqueue: vi.fn(async () => undefined), cancel: vi.fn(async () => undefined) },
+      events: { append: vi.fn(async () => undefined) },
+    } as unknown as Parameters<typeof createRunExecutor>[0]);
+
+    await executor.wakeRoutine("routine-1", scheduledAt.toISOString());
+    expect(taskCreate).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ threadId: "bot-thread" }) }),
+    );
+    expect(prisma.thread.create).not.toHaveBeenCalled();
+  });
+
   it("pins the routine's own model onto the run it fires", async () => {
     const scheduledAt = new Date(Date.now() - 1_000);
     const taskCreate = vi.fn(async () => ({ id: "task-1" }));
@@ -2655,6 +2778,7 @@ description: Prepare standup notes
       attempt: {
         create: vi.fn(async () => ({ id: "attempt-1" })),
         updateMany: vi.fn(async () => ({ count: 1 })),
+        update: vi.fn(async () => ({ id: "attempt-1" })),
       },
       thread: {
         findUniqueOrThrow: vi.fn(async () => ({

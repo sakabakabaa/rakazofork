@@ -437,17 +437,73 @@ export const RoutineSchema = z.object({
   modelProvider: z.string().nullable(),
   modelId: z.string().nullable(),
   thinkingLevel: ThinkingLevelSchema.nullable(),
+  /** The user's own success criteria, kept apart from learned guidance. */
+  doneCondition: z.string().nullable(),
+  /** Where runs do their work: the bot's own chat, or a routine-owned background thread. */
+  threadMode: z.enum(["main", "background"]),
   lastRunAt: z.string().nullable(),
   nextRunAt: z.string().nullable(),
   createdAt: z.string(),
 });
 export type Routine = z.infer<typeof RoutineSchema>;
 
+/** A routine's saved operational state between runs, shown in the editor. */
+export const RoutineStateSchema = z.object({
+  schemaVersion: z.number().int(),
+  checkpoint: z.record(z.string(), z.union([z.string(), z.number(), z.boolean(), z.null()])).nullable(),
+  checkpointNote: z.string().nullable(),
+  verifiedNotes: z.string().nullable(),
+  unresolvedIssue: z.string().nullable(),
+  checkpointedAt: z.string().nullable(),
+});
+export type RoutineState = z.infer<typeof RoutineStateSchema>;
+
+export const RoutineGuidanceStatus = z.enum([
+  "proposed",
+  "active",
+  "rejected",
+  "rolled_back",
+  "disabled",
+]);
+
+/** One version of a routine's learned addendum, with the evidence behind it. */
+export const RoutineGuidanceSchema = z.object({
+  version: z.number().int(),
+  text: z.string(),
+  status: RoutineGuidanceStatus,
+  sourceRunId: z.string().nullable(),
+  reason: z.string().nullable(),
+  /** Measured comparison against the previous version, when one was run. */
+  evaluation: z
+    .object({
+      baseline: z.record(z.string(), z.unknown()),
+      candidate: z.record(z.string(), z.unknown()),
+      promote: z.boolean(),
+      blocked: z.string().nullable(),
+    })
+    .nullable(),
+  createdAt: z.string(),
+  activatedAt: z.string().nullable(),
+});
+export type RoutineGuidance = z.infer<typeof RoutineGuidanceSchema>;
+
+/** Everything the routine editor needs to show and manage learned guidance. */
+export const RoutineLearningSchema = z.object({
+  state: RoutineStateSchema.nullable(),
+  /** The addendum runs currently follow, if any. */
+  active: RoutineGuidanceSchema.nullable(),
+  /** Every version, newest first, so the history and rollback targets are visible. */
+  versions: z.array(RoutineGuidanceSchema),
+});
+export type RoutineLearning = z.infer<typeof RoutineLearningSchema>;
+
 export const CreateRoutineInput = z
   .object({
     botId: Id,
     name: z.string().min(1).max(80),
     prompt: z.string().min(1),
+    doneCondition: z.string().max(600).nullable().default(null),
+    threadMode: z.enum(["main", "background"]).default("main"),
     crons: z.array(z.string().min(1)).default([]),
     timezone: z.string().default("UTC"),
     notify: z.boolean().default(true),

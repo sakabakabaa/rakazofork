@@ -127,7 +127,11 @@ import {
   validateModelAuthAvailability,
   validateStoredModelAuth,
   verifyMcpInstall,
+  activateGuidanceVersion,
+  disableGuidance,
+  rejectGuidanceVersion,
 } from "@rakazo/adapters";
+
 import type { Auth } from "@rakazo/auth";
 import type {
   Actor,
@@ -143,6 +147,7 @@ import type {
   Routine,
   SpaceNavigation,
 } from "@rakazo/contracts";
+import type { RoutineGuidance, RoutineState } from "@rakazo/contracts";
 import {
   appContract,
   attachmentMaxBytes,
@@ -3532,6 +3537,8 @@ export function createRouter(deps: RouterDeps) {
             userId: context.actor.userId,
             name: input.name,
             prompt: input.prompt,
+            doneCondition: input.doneCondition,
+            threadMode: input.threadMode,
             crons: input.crons,
             timezone: input.timezone,
             notify: input.notify,
@@ -3684,6 +3691,8 @@ export function createRouter(deps: RouterDeps) {
             data: {
               name: input.name,
               prompt: input.prompt,
+              doneCondition: input.doneCondition,
+              threadMode: input.threadMode,
               crons: input.crons,
               timezone: input.timezone,
               active: input.active,
@@ -3826,6 +3835,32 @@ export function createRouter(deps: RouterDeps) {
           getLogger().error("routine testRun enqueue", error);
         });
         return { runId: run.id };
+      }),
+      learning: authed.routines.learning.handler(async ({ context, input }) =>
+        routineLearningDto(deps, context.actor, input.routineId),
+      ),
+      guidance: authed.routines.guidance.handler(async ({ context, input }) => {
+        await assertRoutineOwned(deps, context.actor, input.routineId);
+        if (input.action === "activate") {
+          const activated = await activateGuidanceVersion(deps.prisma, {
+            routineId: input.routineId,
+            version: input.version,
+          });
+          if (!activated) throw new ORPCError("NOT_FOUND");
+        } else if (
+          !(await rejectGuidanceVersion(deps.prisma, {
+            routineId: input.routineId,
+            version: input.version,
+          }))
+        ) {
+          throw new ORPCError("NOT_FOUND");
+        }
+        return routineLearningDto(deps, context.actor, input.routineId);
+      }),
+      disableGuidance: authed.routines.disableGuidance.handler(async ({ context, input }) => {
+        await assertRoutineOwned(deps, context.actor, input.routineId);
+        await disableGuidance(deps.prisma, input.routineId);
+        return routineLearningDto(deps, context.actor, input.routineId);
       }),
     },
     goals: {
@@ -7297,6 +7332,8 @@ function mapRoutine(row: {
   webhookEnabled: boolean;
   githubEnabled: boolean;
   messageProvider: string | null;
+  doneCondition: string | null;
+  threadMode: string;
   modelProvider: string | null;
   modelId: string | null;
   thinkingLevel: string | null;
@@ -7319,9 +7356,63 @@ function mapRoutine(row: {
     modelProvider: row.modelProvider ?? null,
     modelId: row.modelId ?? null,
     thinkingLevel: (row.thinkingLevel as Routine["thinkingLevel"]) ?? null,
+    doneCondition: row.doneCondition ?? null,
+    threadMode: row.threadMode === "background" ? "background" : "main",
     lastRunAt: row.lastRunAt?.toISOString() ?? null,
     nextRunAt: row.nextRunAt?.toISOString() ?? null,
     createdAt: row.createdAt.toISOString(),
+  };
+}
+
+/** Resolve a routine the actor owns, or throw without leaking another user's row. */
+async function assertRoutineOwned(deps: RouterDeps, actor: Actor, routineId: string) {
+  const routine = await deps.prisma.routine.findFirst({
+    where: { id: routineId, spaceId: actor.spaceId, userId: actor.userId },
+    select: { id: true },
+  });
+  if (!routine) throw new ORPCError("NOT_FOUND");
+  return routine;
+}
+
+/**
+ * A routine's saved state and its learned-guidance history.
+ *
+ * Read-only: promotion and rollback go through the explicit guidance handlers so every
+ * activation is a deliberate, auditable action.
+ */
+async function routineLearningDto(deps: RouterDeps, actor: Actor, routineId: string) {
+  await assertRoutineOwned(deps, actor, routineId);
+  const [state, versions] = await Promise.all([
+    deps.prisma.routineState.findUnique({ where: { routineId } }),
+    deps.prisma.routineGuidance.findMany({
+      where: { routineId },
+      orderBy: { version: "desc" },
+      take: 20,
+    }),
+  ]);
+  const mapped = versions.map((row) => ({
+    version: row.version,
+    text: row.text,
+    status: row.status as RoutineGuidance["status"],
+    sourceRunId: row.sourceRunId,
+    reason: row.reason,
+    evaluation: (row.evaluation ?? null) as RoutineGuidance["evaluation"],
+    createdAt: row.createdAt.toISOString(),
+    activatedAt: row.activatedAt?.toISOString() ?? null,
+  }));
+  return {
+    state: state
+      ? {
+          schemaVersion: state.schemaVersion,
+          checkpoint: (state.lastCheckpoint ?? null) as RoutineState["checkpoint"],
+          checkpointNote: state.checkpointNote,
+          verifiedNotes: state.verifiedNotes,
+          unresolvedIssue: state.unresolvedIssue,
+          checkpointedAt: state.checkpointedAt?.toISOString() ?? null,
+        }
+      : null,
+    active: mapped.find((row) => row.status === "active") ?? null,
+    versions: mapped,
   };
 }
 

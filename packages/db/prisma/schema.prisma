@@ -645,6 +645,8 @@ model Run {
   sourceMessage        Message?         @relation("RunSourceMessage", fields: [sourceMessageId], references: [id], onDelete: SetNull)
   routineId            String?
   routine              Routine?         @relation(fields: [routineId], references: [id], onDelete: SetNull)
+  /** The learned-guidance version this run was executed with, for review and attribution. */
+  guidanceVersion      Int?
   // The failed routine run this run retries. Unique, so a run is retried at most once.
   retryOfRunId         String?          @unique
   startedAt            DateTime?
@@ -782,6 +784,14 @@ model Routine {
   thread         Thread?   @relation(fields: [threadId], references: [id], onDelete: SetNull)
   name           String
   prompt         String
+  /** The user's own success criteria. Separates "what to achieve" from learned guidance. */
+  doneCondition  String?
+  /**
+   * Where a run does its work. "main" posts into the bot's own chat; "background" uses a
+   * thread owned by this routine so the conversation stays clean while results remain
+   * reachable from the routine's run history.
+   */
+  threadMode     String    @default("main")
   crons          String[]
   timezone       String    @default("UTC")
   active         Boolean   @default(false)
@@ -797,10 +807,70 @@ model Routine {
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
   runs           Run[]
+  state          RoutineState?
+  guidance       RoutineGuidance[]
 
   @@index([active, nextRunAt])
   @@index([spaceId, botId])
   @@map("routines")
+}
+
+/**
+ * A routine's private operational memory between completed runs.
+ *
+ * `Run.checkpoint` resumes one interrupted execution; this survives across separate runs.
+ * It is deliberately not bot- or user-wide: a cursor belongs to the schedule that owns it.
+ */
+model RoutineState {
+  id               String   @id @default(cuid())
+  routineId        String   @unique
+  routine          Routine  @relation(fields: [routineId], references: [id], onDelete: Cascade)
+  /** Bumped when the shape of `lastCheckpoint` changes, so a reader can migrate it. */
+  schemaVersion    Int      @default(1)
+  /** Structured cursor for this routine's domain, e.g. the last processed message id. */
+  lastCheckpoint   Json?
+  /** Human-readable label for the checkpoint, so the next run knows what the cursor means. */
+  checkpointNote   String?
+  /** Facts proven by tool results, not assistant claims. */
+  verifiedNotes    String?
+  /** A known blocker the next run should not rediscover from scratch. */
+  unresolvedIssue  String?
+  /** The run that last advanced the checkpoint. */
+  lastRunId        String?
+  checkpointedAt   DateTime?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@map("routine_states")
+}
+
+/**
+ * A learned addendum to a routine's user-authored prompt.
+ *
+ * Every proposed and activated version is kept with the evidence behind it, so a change can
+ * be explained, reviewed, and rolled back. The addendum never replaces `Routine.prompt`; the
+ * run's own `Task.prompt` records the exact instructions a given execution used.
+ */
+model RoutineGuidance {
+  id           String    @id @default(cuid())
+  routineId    String
+  routine      Routine   @relation(fields: [routineId], references: [id], onDelete: Cascade)
+  version      Int
+  text         String
+  /** proposed | active | rejected | rolled_back */
+  status       String    @default("proposed")
+  /** The run whose evidence produced this version. */
+  sourceRunId  String?
+  /** Why it changed, in the proposing run's own words. */
+  reason       String?
+  /** Measured comparison against the previous version, when one was run. */
+  evaluation   Json?
+  createdAt    DateTime  @default(now())
+  activatedAt  DateTime?
+
+  @@unique([routineId, version])
+  @@index([routineId, status])
+  @@map("routine_guidance")
 }
 
 model ScratchpadItem {

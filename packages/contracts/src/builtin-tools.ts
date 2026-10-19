@@ -43,6 +43,8 @@ export const BUILTIN_TOOL_NAMES = [
   "goal_create",
   "goal_update",
   "goal_status",
+  "routine_state_update",
+  "routine_guidance_propose",
   "scratchpad_list",
   "scratchpad_add",
   "scratchpad_update",

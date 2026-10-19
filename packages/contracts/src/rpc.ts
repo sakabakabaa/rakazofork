@@ -72,6 +72,7 @@ import {
   ModelOAuthBeginSchema,
   REPLY_QUOTE_MAX_LENGTH,
   ReorderBotsInput,
+  RoutineLearningSchema,
   RoutineSchema,
   ScratchpadItemSchema,
   ScratchpadItemStatusSchema,
@@ -538,6 +539,10 @@ export const appContract = {
             routineId: Id,
             name: z.string().optional(),
             prompt: z.string().optional(),
+            /** The user's success criteria; separate from learned guidance. */
+            doneCondition: z.string().max(600).nullable().optional(),
+            /** Where runs do their work: the bot's own chat, or a background thread. */
+            threadMode: z.enum(["main", "background"]).optional(),
             crons: z.array(z.string().min(1)).optional(),
             timezone: z.string().optional(),
             active: z.boolean().optional(),
@@ -584,6 +589,22 @@ export const appContract = {
         }),
       )
       .output(z.object({ runId: Id })),
+    /** Saved state plus every learned-guidance version, for review and rollback. */
+    learning: oc.input(z.object({ routineId: Id })).output(RoutineLearningSchema),
+    /** Approve, roll back to, or disable a guidance version. */
+    guidance: oc
+      .input(
+        z.object({
+          routineId: Id,
+          version: z.number().int().positive(),
+          action: z.enum(["activate", "reject"]),
+        }),
+      )
+      .output(RoutineLearningSchema),
+    /** Turn learned guidance off without discarding its history. */
+    disableGuidance: oc
+      .input(z.object({ routineId: Id }))
+      .output(RoutineLearningSchema),
   },
   goals: {
     list: oc.input(z.object({ botId: Id })).output(z.array(Goal)),

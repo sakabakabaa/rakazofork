@@ -46,6 +46,7 @@ import {
   thinkingLevelLabel,
 } from "../lib/model-catalog";
 import { rpc } from "../lib/rpc";
+import { RoutineLearning } from "./RoutineLearning";
 import { RoutineRunHistory } from "./RoutineRunHistory";
 import { RoutineSchedule } from "./RoutineSchedule";
 
@@ -85,6 +86,10 @@ const COMING_SOON = [
 export type RoutineDraftState = {
   name: string;
   prompt: string;
+  /** The user's own success criteria, kept apart from learned guidance. */
+  doneCondition: string;
+  /** Where runs do their work: the bot's own chat, or a routine-owned background thread. */
+  threadMode: "main" | "background";
   schedules: CronPreset[];
   webhookEnabled: boolean;
   githubEnabled: boolean;
@@ -100,6 +105,8 @@ export function emptyRoutineDraft(): RoutineDraftState {
   return {
     name: "",
     prompt: "",
+    doneCondition: "",
+    threadMode: "main",
     schedules: [],
     webhookEnabled: false,
     githubEnabled: false,
@@ -115,6 +122,8 @@ export function draftFromRoutine(routine: Routine): RoutineDraftState {
   return {
     name: routine.name,
     prompt: routine.prompt,
+    doneCondition: routine.doneCondition ?? "",
+    threadMode: routine.threadMode,
     schedules: routine.crons.map(presetFromCron),
     webhookEnabled: routine.webhookEnabled,
     githubEnabled: routine.githubEnabled,
@@ -390,6 +399,39 @@ export function RoutineEditor({
         />
       </label>
 
+      <label
+        htmlFor={`${fieldId}-done`}
+        className="mt-5 block text-sm text-muted-foreground"
+      >
+        <Trans>Done when</Trans>
+        <Textarea
+          id={`${fieldId}-done`}
+          value={draft.doneCondition}
+          placeholder={t`How should a run know it succeeded?`}
+          onChange={(e) => onChange({ ...draft, doneCondition: e.target.value })}
+          rows={2}
+          className="mt-2"
+        />
+      </label>
+
+      <label
+        htmlFor={`${fieldId}-thread`}
+        className="mt-5 block text-sm text-muted-foreground"
+      >
+        <Trans>Runs in</Trans>
+        <NativeSelect
+          id={`${fieldId}-thread`}
+          className="mt-2 w-full"
+          value={draft.threadMode}
+          onChange={(event) =>
+            onChange({ ...draft, threadMode: event.target.value as "main" | "background" })
+          }
+        >
+          <NativeSelectOption value="main">{t`Main chat`}</NativeSelectOption>
+          <NativeSelectOption value="background">{t`Background`}</NativeSelectOption>
+        </NativeSelect>
+      </label>
+
       <div className="mt-5 text-sm text-muted-foreground">
         <div className="flex items-baseline gap-2">
           <Trans>When to run</Trans>
@@ -627,6 +669,7 @@ export function RoutineEditor({
         </p>
       ) : null}
 
+      {editing ? <RoutineLearning key={editing.id} routineId={editing.id} /> : null}
       {editing ? <RoutineRunHistory key={editing.id} routineId={editing.id} /> : null}
     </div>
   );
