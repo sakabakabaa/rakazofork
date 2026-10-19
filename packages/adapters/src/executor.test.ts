@@ -1734,7 +1734,7 @@ describe("createRunExecutor", () => {
             })),
           },
           task: { create: taskCreate },
-          run: { create: runCreate },
+          run: { create: runCreate, findFirst: vi.fn(async () => null) },
         }),
       ),
     } as unknown as PrismaClient;
@@ -1770,75 +1770,67 @@ describe("createRunExecutor", () => {
     );
   });
 
-  it("runs a background routine in its own thread and reuses it", async () => {
+  it("gives a background routine its own output thread per run", async () => {
     const scheduledAt = new Date(Date.now() - 1_000);
     const taskCreate = vi.fn(async () => ({ id: "task-1" }));
     const runCreate = vi.fn(async () => ({ id: "run-1" }));
-    function prismaFor(existingThread: { id: string } | null) {
-      return {
-        routine: {
-          findUnique: vi.fn(async () => ({
-            id: "routine-1",
-            spaceId: "ws-1",
-            botId: "bot-1",
-            userId: "user-1",
-            name: "Inbox sweep",
-            prompt: "sweep",
-            crons: ["0 9 * * *"],
-            timezone: "UTC",
-            active: true,
-            nextRunAt: scheduledAt,
-            threadId: null,
-            threadMode: "background",
-          })),
-        },
-        bot: { findUnique: vi.fn(async () => ({ id: "bot-1", thread: { id: "bot-thread" } })) },
-        thread: {
-          findFirst: vi.fn(async () => existingThread),
-          create: vi.fn(async () => ({ id: "routine-thread" })),
-        },
-        agentSkill: { findMany: vi.fn(async () => []) },
-        routineGuidance: { findFirst: vi.fn(async () => null) },
-        $transaction: vi.fn(async (callback: (tx: unknown) => Promise<unknown>) =>
-          callback({
-            routine: {
-              updateMany: vi.fn(async () => ({ count: 1 })),
-              findUnique: vi.fn(async () => ({
-                modelProvider: null,
-                modelId: null,
-                thinkingLevel: null,
-              })),
-            },
-            task: { create: taskCreate },
-            run: { create: runCreate },
-          }),
-        ),
-      } as unknown as PrismaClient;
-    }
-    const makeExecutor = (prisma: PrismaClient) =>
-      createRunExecutor({
-        prisma,
-        jobs: { enqueue: vi.fn(async () => undefined), cancel: vi.fn(async () => undefined) },
-        events: { append: vi.fn(async () => undefined) },
-      } as unknown as Parameters<typeof createRunExecutor>[0]);
+    const threadCreate = vi.fn(async () => ({ id: "routine-thread" }));
+    const prisma = {
+      routine: {
+        findUnique: vi.fn(async () => ({
+          id: "routine-1",
+          spaceId: "ws-1",
+          botId: "bot-1",
+          userId: "user-1",
+          name: "Inbox sweep",
+          prompt: "sweep",
+          crons: ["0 9 * * *"],
+          timezone: "UTC",
+          active: true,
+          nextRunAt: scheduledAt,
+          threadId: null,
+          threadMode: "background",
+        })),
+      },
+      bot: { findUnique: vi.fn(async () => ({ id: "bot-1", thread: { id: "bot-thread" } })) },
+      agentSkill: { findMany: vi.fn(async () => []) },
+      routineGuidance: { findFirst: vi.fn(async () => null) },
+      $transaction: vi.fn(async (callback: (tx: unknown) => Promise<unknown>) =>
+        callback({
+          routine: {
+            updateMany: vi.fn(async () => ({ count: 1 })),
+            findUnique: vi.fn(async () => ({
+              modelProvider: null,
+              modelId: null,
+              thinkingLevel: null,
+            })),
+          },
+          thread: { create: threadCreate },
+          task: { create: taskCreate },
+          run: { create: runCreate, findFirst: vi.fn(async () => null) },
+        }),
+      ),
+    } as unknown as PrismaClient;
+    const executor = createRunExecutor({
+      prisma,
+      jobs: { enqueue: vi.fn(async () => undefined), cancel: vi.fn(async () => undefined) },
+      events: { append: vi.fn(async () => undefined) },
+    } as unknown as Parameters<typeof createRunExecutor>[0]);
 
-    const reused = prismaFor({ id: "routine-thread" });
-    await makeExecutor(reused).wakeRoutine("routine-1", scheduledAt.toISOString());
+    await executor.wakeRoutine("routine-1", scheduledAt.toISOString());
+
+    // The thread belongs to the routine, not the bot, so routine output never enters chat.
+    expect(threadCreate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ routineId: "routine-1", spaceId: "ws-1" }),
+      }),
+    );
     expect(taskCreate).toHaveBeenCalledWith(
       expect.objectContaining({ data: expect.objectContaining({ threadId: "routine-thread" }) }),
     );
-    // An existing background thread is reused rather than creating a second one.
-    expect(
-      (reused.thread as unknown as { create: unknown }).create,
-    ).not.toHaveBeenCalled();
-
-    taskCreate.mockClear();
-    const fresh = prismaFor(null);
-    await makeExecutor(fresh).wakeRoutine("routine-1", scheduledAt.toISOString());
-    expect(taskCreate).toHaveBeenCalledWith(
+    expect(runCreate).toHaveBeenCalledWith(
       expect.objectContaining({ data: expect.objectContaining({ threadId: "routine-thread" }) }),
     );
-    expect((fresh.thread as unknown as { create: unknown }).create).toHaveBeenCalledOnce();
   });
 
   it("keeps a main-chat routine in the bot's own thread", async () => {
@@ -1876,7 +1868,7 @@ describe("createRunExecutor", () => {
             })),
           },
           task: { create: taskCreate },
-          run: { create: vi.fn(async () => ({ id: "run-1" })) },
+          run: { create: vi.fn(async () => ({ id: "run-1" })), findFirst: vi.fn(async () => null) },
         }),
       ),
     } as unknown as PrismaClient;
@@ -1932,7 +1924,7 @@ describe("createRunExecutor", () => {
               findUnique: vi.fn(async () => claimedModel),
             },
             task: { create: taskCreate },
-            run: { create: runCreate },
+            run: { create: runCreate, findFirst: vi.fn(async () => null) },
           }),
         ),
       } as unknown as PrismaClient;
@@ -2082,7 +2074,7 @@ describe("createRunExecutor", () => {
             })),
           },
           task: { create: taskCreate },
-          run: { create: runCreate },
+          run: { create: runCreate, findFirst: vi.fn(async () => null) },
         }),
       ),
     } as unknown as PrismaClient;
@@ -2154,7 +2146,7 @@ describe("createRunExecutor", () => {
             })),
           },
           task: { create: taskCreate },
-          run: { create: runCreate },
+          run: { create: runCreate, findFirst: vi.fn(async () => null) },
         }),
       ),
     } as unknown as PrismaClient;
@@ -2243,7 +2235,7 @@ description: Prepare standup notes
             })),
           },
           task: { create: taskCreate },
-          run: { create: vi.fn(async () => ({ id: "run-1" })) },
+          run: { create: vi.fn(async () => ({ id: "run-1" })), findFirst: vi.fn(async () => null) },
         }),
       ),
     } as unknown as PrismaClient;
@@ -2303,7 +2295,7 @@ description: Prepare standup notes
             })),
           },
           task: { create: vi.fn(async () => ({ id: "task-1" })) },
-          run: { create: vi.fn(async () => ({ id: "run-1", taskId: "task-1" })) },
+          run: { create: vi.fn(async () => ({ id: "run-1", taskId: "task-1" })), findFirst: vi.fn(async () => null) },
         }),
       ),
     } as unknown as PrismaClient;
@@ -2368,7 +2360,7 @@ description: Prepare standup notes
               })),
             },
             task: { create: vi.fn(async () => ({ id: "task-1" })) },
-            run: { create: vi.fn(async () => ({ id: "run-1", taskId: "task-1" })) },
+            run: { create: vi.fn(async () => ({ id: "run-1", taskId: "task-1" })), findFirst: vi.fn(async () => null) },
           });
         }
         return callback({

@@ -73,6 +73,16 @@ describe("decodeGeneratedImage", () => {
     expect(flat?.mimeType).toBe("image/png");
   });
 
+  it("decodes gateway responses that return images separately from content", () => {
+    const image = decodeGeneratedImage({
+      content: [{ type: "text", text: "A blue mug" }],
+      images: [{ type: "image_url", image_url: { url: dataUrl("image/png", PNG_BYTES) } }],
+    });
+    expect(image?.mimeType).toBe("image/png");
+    expect(image?.text).toBe("A blue mug");
+    expect(Buffer.from(image!.bytes)).toEqual(PNG_BYTES);
+  });
+
   it("trusts the bytes over a wrong declared type", () => {
     // A JPEG labeled as PNG would otherwise be stored with a .png extension.
     const image = decodeGeneratedImage({

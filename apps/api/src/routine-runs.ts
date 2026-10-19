@@ -1,7 +1,15 @@
 import { ORPCError } from "@orpc/server";
-import type { Actor, RoutineHistory, RoutineRun, RoutineRunCursor } from "@rakazo/contracts";
+import type {
+  Actor,
+  RoutineHistory,
+  RoutineOutput,
+  RoutineRun,
+  RoutineRunCursor,
+} from "@rakazo/contracts";
+import { ProductEventSchema } from "@rakazo/contracts";
 import type { PrismaClient } from "@rakazo/db";
 import { Prisma } from "@rakazo/db";
+import { toThreadMessage } from "./thread-message-pages.js";
 
 export async function listRoutineRuns(
   prisma: PrismaClient,
@@ -39,7 +47,7 @@ export async function listRoutineRuns(
       id: true,
       botId: true,
       threadId: true,
-      thread: { select: { groupId: true } },
+      thread: { select: { groupId: true, botId: true } },
       status: true,
       createdAt: true,
       startedAt: true,
@@ -77,7 +85,68 @@ export async function listRoutineRuns(
       createdAt: run.createdAt.toISOString(),
       startedAt: run.startedAt?.toISOString() ?? null,
       completedAt: run.completedAt?.toISOString() ?? null,
-      messageId: replyByRun.get(run.id) ?? null,
+      messageId:
+        run.thread.botId === null && !run.thread.groupId ? null : (replyByRun.get(run.id) ?? null),
     })),
+  };
+}
+
+/** Run output is scoped to the owner and run, including legacy runs in a shared chat. */
+export async function routineOutput(
+  prisma: PrismaClient,
+  actor: Actor,
+  runId: string,
+  before?: number,
+): Promise<RoutineOutput> {
+  const run = await prisma.run.findFirst({
+    where: {
+      id: runId,
+      trigger: "routine",
+      spaceId: actor.spaceId,
+      userId: actor.userId,
+      bot: { archivedAt: null },
+    },
+    select: {
+      id: true,
+      threadId: true,
+      status: true,
+      error: true,
+      thread: { select: { botId: true, groupId: true, externalConversationId: true } },
+    },
+  });
+  if (!run) throw new ORPCError("NOT_FOUND");
+  const rows = await prisma.message.findMany({
+    where: {
+      runId,
+      threadId: run.threadId,
+      ...(before === undefined ? {} : { seq: { lt: before } }),
+    },
+    orderBy: { seq: "desc" },
+    take: 101,
+  });
+  const events = await prisma.event.findMany({
+    where: { runId, threadId: run.threadId, spaceId: actor.spaceId },
+    orderBy: { seq: "desc" },
+    take: 500,
+  });
+  const messages = rows.slice(0, 100).reverse();
+  return {
+    runId,
+    threadId: run.threadId,
+    isolated: Boolean(
+      run.thread && !run.thread.botId && !run.thread.groupId && !run.thread.externalConversationId,
+    ),
+    status: run.status as RoutineRun["status"],
+    error: run.error,
+    messages: messages.map(toThreadMessage),
+    olderCursor: rows.length > 100 ? messages[0]!.seq : null,
+    events: events.reverse().flatMap((event) => {
+      const parsed = ProductEventSchema.safeParse({
+        ...event,
+        runId: event.runId ?? undefined,
+        createdAt: event.createdAt.toISOString(),
+      });
+      return parsed.success ? [parsed.data] : [];
+    }),
   };
 }

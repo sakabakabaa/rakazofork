@@ -2,9 +2,8 @@
  * Image generation over an OpenAI-compatible chat endpoint.
  *
  * Image models that speak the chat protocol return their pixels as an
- * `image_url` part inside the assistant message, alongside an optional text
- * part. That is not a standard chat-completion shape, but it is the one the
- * widely used gateways emit, and it needs no second API surface or vendor SDK.
+ * `image_url` part inside the assistant message or in its `images` array,
+ * alongside optional text. This needs no second API surface or vendor SDK.
  *
  * Kept free of Prisma, the secret store, and the sandbox so the parsing and the
  * request/response contract can be tested offline; the executor supplies the
@@ -12,7 +11,9 @@
  */
 
 /** Every image part carries base64, so cap what one response may cost. */
-export const MAX_IMAGE_RESPONSE_BYTES = 12 * 1024 * 1024;
+export const MAX_IMAGE_RESPONSE_BYTES = 14 * 1024 * 1024;
+/** Generated outputs must fit in the artifact attachment limit. */
+export const MAX_GENERATED_IMAGE_BYTES = 10 * 1024 * 1024;
 /** A generated prompt is text; refuse absurd ones before spending a request. */
 export const MAX_IMAGE_PROMPT_CHARS = 4_000;
 
@@ -87,16 +88,25 @@ function imageUrlFromPart(part: ContentPart): string | undefined {
  */
 export function decodeGeneratedImage(message: unknown): GeneratedImage | undefined {
   if (!message || typeof message !== "object") return undefined;
-  const content = (message as ContentPart).content;
-  const parts: ContentPart[] = Array.isArray(content)
+  const assistant = message as ContentPart;
+  const content = assistant.content;
+  const contentParts: ContentPart[] = Array.isArray(content)
     ? (content as ContentPart[]).filter(
         (part): part is ContentPart => Boolean(part) && typeof part === "object",
       )
     : [];
+  // Gateways disagree on whether generated images are embedded in `content`
+  // or returned separately in the OpenRouter-style `images` field.
+  const images = Array.isArray(assistant.images)
+    ? assistant.images.filter(
+        (part): part is ContentPart => Boolean(part) && typeof part === "object",
+      )
+    : [];
+  const parts = [...contentParts, ...images];
 
   const texts: string[] = [];
   if (typeof content === "string") texts.push(content);
-  for (const part of parts) {
+  for (const part of contentParts) {
     if (part.type === "text" && typeof part.text === "string") texts.push(part.text);
   }
 
@@ -178,7 +188,7 @@ export async function generateImage(request: GenerateImageRequest): Promise<Gene
     : undefined;
   const image = decodeGeneratedImage(message);
   if (!image) throw new Error(NO_IMAGE_IN_RESPONSE_MESSAGE);
-  if (image.bytes.byteLength > MAX_IMAGE_RESPONSE_BYTES) {
+  if (image.bytes.byteLength > MAX_GENERATED_IMAGE_BYTES) {
     throw new Error("Generated image is too large");
   }
   return image;

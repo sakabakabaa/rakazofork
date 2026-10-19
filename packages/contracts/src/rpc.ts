@@ -107,7 +107,12 @@ import {
   IntegrationSetupStateSchema,
 } from "./integration-settings.js";
 import { MessageReactionSchema } from "./reactions.js";
-import { RoutineHistorySchema, RoutineRunCursorSchema, RunsListOutputSchema } from "./runs.js";
+import {
+  RoutineHistorySchema,
+  RoutineOutputSchema,
+  RoutineRunCursorSchema,
+  RunsListOutputSchema,
+} from "./runs.js";
 import { SearchQueryOutputSchema } from "./search.js";
 
 const botId = z.object({ botId: Id });
@@ -231,6 +236,26 @@ export const appContract = {
   models: {
     list: oc.output(z.array(ModelCatalogEntrySchema)),
     credentials: oc.output(z.array(ModelCredentialSchema)),
+    imageGeneration: oc.output(
+      z.object({
+        provider: z.string().nullable(),
+        credentialId: Id.nullable().optional(),
+        modelId: z.string().nullable(),
+      }),
+    ),
+    setImageGeneration: oc
+      .input(
+        z
+          .object({
+            provider: z.string().trim().min(1).nullable(),
+            credentialId: Id.nullable().optional(),
+            modelId: z.string().trim().min(1).max(512).nullable(),
+          })
+          .refine((value) => (value.provider === null) === (value.modelId === null), {
+            message: "Choose both a provider and model, or clear the selection.",
+          }),
+      )
+      .output(z.object({ ok: z.literal(true) })),
     backups: oc.output(z.array(ModelBackupChoiceSchema)),
     setBackups: oc.input(ModelBackupListSchema).output(z.object({ ok: z.literal(true) })),
     connect: oc.input(ModelConnectInputSchema).output(ModelCredentialSchema),
@@ -527,6 +552,21 @@ export const appContract = {
     disconnectProvider: oc.output(z.object({ ok: z.literal(true) })),
   },
   routines: {
+    all: oc.input(z.object({})).output(z.array(RoutineSchema)),
+    stopRun: oc.input(z.object({ runId: Id })).output(z.object({ ok: z.literal(true) })),
+    answerRun: oc
+      .input(
+        z.object({
+          runId: Id,
+          messageId: Id,
+          answer: z.string().min(1),
+          username: z.string().min(1).max(512).optional(),
+        }),
+      )
+      .output(z.object({ ok: z.literal(true) })),
+    output: oc
+      .input(z.object({ runId: Id, before: z.number().int().nonnegative().optional() }))
+      .output(RoutineOutputSchema),
     list: oc.input(botId).output(z.array(RoutineSchema)),
     history: oc
       .input(z.object({ routineId: Id, before: RoutineRunCursorSchema.optional() }))

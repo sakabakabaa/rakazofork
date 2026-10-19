@@ -344,6 +344,8 @@ model SpaceModelPreference {
   credentialId String
   credential   UserModelCredential @relation(fields: [credentialId, userId], references: [id, userId], onDelete: Cascade)
   modelId      String?
+  /** Optional separate model for image generation on this connection. */
+  imageGenerationModelId String?
   thinkingLevel String?
   isDefault    Boolean             @default(false)
   createdAt    DateTime            @default(now())
@@ -545,9 +547,17 @@ model Thread {
   events                      Event[]
   tasks                       Task[]
   runs                        Run[]
-  routines                    Routine[]
+  /** Threads where a routine is configured to post (Routine.threadId). */
+  routines                    Routine[] @relation("RoutineSourceThread")
+  /**
+   * Set when this thread is a routine's own output thread. A routine run writes here
+   * instead of the bot's conversation, so scheduled work never floods the main chat.
+   */
+  routineId                   String?
+  routineOutput               Routine?  @relation("RoutineOutputThreads", fields: [routineId], references: [id], onDelete: Cascade)
 
   @@index([spaceId])
+  @@index([routineId])
   @@map("threads")
 }
 
@@ -781,7 +791,7 @@ model Routine {
   bot            Bot       @relation(fields: [botId], references: [id], onDelete: Cascade)
   userId         String
   threadId       String?
-  thread         Thread?   @relation(fields: [threadId], references: [id], onDelete: SetNull)
+  thread         Thread?   @relation("RoutineSourceThread", fields: [threadId], references: [id], onDelete: SetNull)
   name           String
   prompt         String
   /** The user's own success criteria. Separates "what to achieve" from learned guidance. */
@@ -791,7 +801,7 @@ model Routine {
    * thread owned by this routine so the conversation stays clean while results remain
    * reachable from the routine's run history.
    */
-  threadMode     String    @default("main")
+  threadMode     String    @default("background")
   crons          String[]
   timezone       String    @default("UTC")
   active         Boolean   @default(false)
@@ -807,6 +817,8 @@ model Routine {
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
   runs           Run[]
+  /** One thread per run, so each execution keeps its own transcript. */
+  outputThreads  Thread[] @relation("RoutineOutputThreads")
   state          RoutineState?
   guidance       RoutineGuidance[]
 

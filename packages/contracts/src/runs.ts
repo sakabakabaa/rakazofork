@@ -1,4 +1,5 @@
 import * as z from "zod";
+import { ProductEventSchema, ThreadMessageSchema } from "./events.js";
 import { Id, IsoDate, RunStatus } from "./ids.js";
 
 export const RUN_TRIGGERS = [
@@ -59,3 +60,16 @@ export const RunsListOutputSchema = z.object({
   runs: z.array(RunActivityRowSchema),
 });
 export type RunsListOutput = z.infer<typeof RunsListOutputSchema>;
+
+/** One routine run's transcript and product events, for the routine workspace. */
+export const RoutineOutputSchema = z.object({
+  runId: Id,
+  threadId: Id,
+  isolated: z.boolean(),
+  status: RunStatus,
+  error: z.string().nullable(),
+  messages: z.array(ThreadMessageSchema),
+  events: z.array(ProductEventSchema),
+  olderCursor: z.number().nullable(),
+});
+export type RoutineOutput = z.infer<typeof RoutineOutputSchema>;

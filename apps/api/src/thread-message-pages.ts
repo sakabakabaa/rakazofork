@@ -244,7 +244,7 @@ export function shouldForwardBackgroundThreadEvent(event: {
   return Array.isArray(blocks) && blocks.some(isBackgroundInputBlock);
 }
 
-function toThreadMessage(row: {
+export function toThreadMessage(row: {
   id: string;
   threadId: string;
   seq: number;

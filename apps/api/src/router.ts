@@ -269,7 +269,7 @@ import {
   promptFocus,
   startOnboarding,
 } from "./onboarding.js";
-import { listRoutineRuns } from "./routine-runs.js";
+import { listRoutineRuns, routineOutput } from "./routine-runs.js";
 import { listSpaceRuns } from "./runs.js";
 import { addScreenProxyCapability } from "./screen-proxy.js";
 import { querySpaceSearch } from "./search.js";
@@ -1197,6 +1197,132 @@ export function createRouter(deps: RouterDeps) {
             }
           }),
         );
+      }),
+      imageGeneration: authed.models.imageGeneration.handler(async ({ context }) => {
+        const preference = await deps.prisma.spaceModelPreference.findFirst({
+          where: {
+            spaceId: context.actor.spaceId,
+            userId: context.actor.userId,
+            imageGenerationModelId: { not: null },
+          },
+          include: { credential: { select: { provider: true } } },
+        });
+        return {
+          provider: preference?.credential.provider ?? null,
+          credentialId: preference?.credentialId ?? null,
+          modelId: preference?.imageGenerationModelId ?? null,
+        };
+      }),
+      setImageGeneration: authed.models.setImageGeneration.handler(async ({ context, input }) => {
+        if (
+          input.provider &&
+          !["openrouter", OPENAI_COMPATIBLE_PROVIDER_ID].includes(input.provider)
+        ) {
+          throw new ORPCError("BAD_REQUEST", {
+            message:
+              "Image generation currently supports OpenRouter and [OI]-compatible providers.",
+          });
+        }
+        const selection =
+          input.provider && input.modelId
+            ? await (async () => {
+                const credential = await deps.prisma.userModelCredential.findFirst({
+                  where: {
+                    userId: context.actor.userId,
+                    provider: input.provider!,
+                    ...(input.credentialId ? { id: input.credentialId } : {}),
+                  },
+                  orderBy: newestModelCredentialOrder,
+                });
+                if (!credential) {
+                  throw new ORPCError("NOT_FOUND", {
+                    message: `Connect ${input.provider} in Models before selecting it for image generation.`,
+                  });
+                }
+                const secret = await deps.prisma.secret.findFirst({
+                  where: { id: credential.secretId, userId: context.actor.userId, spaceId: null },
+                  select: { id: true, ciphertext: true },
+                });
+                if (!secret) {
+                  throw new ORPCError("BAD_REQUEST", {
+                    message: "The selected provider credential is unavailable.",
+                  });
+                }
+                let stored: ReturnType<typeof parseModelSecret>;
+                try {
+                  stored = parseModelSecret(await deps.secrets.load(secret.ciphertext, secret.id));
+                } catch {
+                  throw new ORPCError("BAD_REQUEST", {
+                    message: "The selected provider credential could not be read.",
+                  });
+                }
+                const supported =
+                  input.provider === OPENAI_COMPATIBLE_PROVIDER_ID
+                    ? stored.kind === "openai_compatible"
+                    : stored.kind === "api_key";
+                if (!supported) {
+                  throw new ORPCError("BAD_REQUEST", {
+                    message: "Image generation needs an API key credential for this provider.",
+                  });
+                }
+                return {
+                  credentialId: credential.id,
+                  secretId: credential.secretId,
+                  ciphertext: secret.ciphertext,
+                  modelId: input.modelId,
+                };
+              })()
+            : null;
+        await withSerializableRetry(() =>
+          deps.prisma.$transaction(
+            async (tx) => {
+              if (selection) {
+                const currentCredential = await tx.userModelCredential.findFirst({
+                  where: { id: selection.credentialId, userId: context.actor.userId },
+                  select: { secretId: true },
+                });
+                const currentSecret = await tx.secret.findFirst({
+                  where: { id: selection.secretId, userId: context.actor.userId, spaceId: null },
+                  select: { ciphertext: true },
+                });
+                if (
+                  currentCredential?.secretId !== selection.secretId ||
+                  currentSecret?.ciphertext !== selection.ciphertext
+                ) {
+                  throw new ORPCError("CONFLICT", {
+                    message: "Provider credentials changed while saving; retry.",
+                  });
+                }
+              }
+              await tx.spaceModelPreference.updateMany({
+                where: { spaceId: context.actor.spaceId, userId: context.actor.userId },
+                data: { imageGenerationModelId: null },
+              });
+              if (!selection || !input.provider) return;
+              await tx.spaceModelPreference.upsert({
+                where: {
+                  spaceId_userId_credentialId: {
+                    spaceId: context.actor.spaceId,
+                    userId: context.actor.userId,
+                    credentialId: selection.credentialId,
+                  },
+                },
+                create: {
+                  spaceId: context.actor.spaceId,
+                  userId: context.actor.userId,
+                  credentialId: selection.credentialId,
+                  modelId: null,
+                  thinkingLevel: null,
+                  isDefault: false,
+                  imageGenerationModelId: selection.modelId,
+                },
+                update: { imageGenerationModelId: selection.modelId },
+              });
+            },
+            { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+          ),
+        );
+        return { ok: true as const };
       }),
       backups: authed.models.backups.handler(async ({ context }) =>
         listSpaceBackupModels(deps.prisma, context.actor),
@@ -3504,6 +3630,80 @@ export function createRouter(deps: RouterDeps) {
       ),
     },
     routines: {
+      all: authed.routines.all.handler(async ({ context }) => {
+        const rows = await deps.prisma.routine.findMany({
+          where: {
+            spaceId: context.actor.spaceId,
+            userId: context.actor.userId,
+            bot: { archivedAt: null },
+          },
+          include: { runs: { orderBy: { createdAt: "desc" }, take: 1, select: { status: true } } },
+          orderBy: [{ active: "desc" }, { name: "asc" }],
+        });
+        return rows.map((row) => ({
+          ...mapRoutine(row),
+          latestRunStatus: (row.runs[0]?.status as Routine["latestRunStatus"]) ?? null,
+        }));
+      }),
+      stopRun: authed.routines.stopRun.handler(async ({ context, input }) => {
+        const run = await deps.prisma.run.findFirst({
+          where: {
+            id: input.runId,
+            trigger: "routine",
+            userId: context.actor.userId,
+            spaceId: context.actor.spaceId,
+            bot: { archivedAt: null },
+          },
+          include: { thread: true },
+        });
+        if (!run) throw new ORPCError("NOT_FOUND");
+        if (run.thread.botId || run.thread.groupId || run.thread.externalConversationId) {
+          throw new ORPCError("CONFLICT", {
+            message: "Stop this older run from its original chat",
+          });
+        }
+        const bot = await repos.getBot(context.actor, run.botId);
+        await stopThreadRuns(deps, context.actor, {
+          kind: "bot",
+          botId: run.botId,
+          threadId: run.threadId,
+          bot,
+        });
+        return { ok: true as const };
+      }),
+      answerRun: authed.routines.answerRun.handler(async ({ context, input }) => {
+        const run = await deps.prisma.run.findFirst({
+          where: {
+            id: input.runId,
+            trigger: "routine",
+            userId: context.actor.userId,
+            spaceId: context.actor.spaceId,
+            bot: { archivedAt: null },
+          },
+          select: { threadId: true },
+        });
+        if (!run) throw new ORPCError("NOT_FOUND");
+        const answered = await deps.events.answerRunInput({
+          spaceId: context.actor.spaceId,
+          threadId: run.threadId,
+          runId: input.runId,
+          messageId: input.messageId,
+          answer: input.answer,
+          username: input.username,
+          answeredByUserId: context.actor.userId,
+        });
+        if (!answered)
+          throw new ORPCError("CONFLICT", {
+            message: "This prompt is no longer awaiting an answer",
+          });
+        await deps.jobs
+          .enqueue(runContinueJob(input.runId))
+          .catch((error) => getLogger().error("routine answer enqueue", error));
+        return { ok: true as const };
+      }),
+      output: authed.routines.output.handler(({ context, input }) =>
+        routineOutput(deps.prisma, context.actor, input.runId, input.before),
+      ),
       history: authed.routines.history.handler(async ({ context, input }) =>
         listRoutineRuns(deps.prisma, context.actor, input.routineId, input.before),
       ),

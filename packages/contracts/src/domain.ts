@@ -418,6 +418,7 @@ export function routineModelIssues(
 
 export const RoutineSchema = z.object({
   id: Id,
+  latestRunStatus: RunStatus.nullable().optional(),
   botId: Id,
   name: z.string(),
   prompt: z.string(),

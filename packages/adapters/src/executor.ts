@@ -3089,35 +3089,6 @@ async function recordRoutineEvidence(
   });
 }
 
-/**
- * The thread a background routine runs in.
- *
- * Created on first use and reused after that, so a routine keeps one continuous history
- * without posting into the bot's conversation. A group thread or an explicitly chosen
- * thread always wins over creating one.
- */
-async function routineBackgroundThread(
-  deps: Pick<ExecutorDeps, "prisma">,
-  routine: { id: string; spaceId: string; userId: string; name: string },
-  bot: { id: string },
-): Promise<{ id: string }> {
-  const existing = await deps.prisma.thread.findFirst({
-    where: { spaceId: routine.spaceId, routines: { some: { id: routine.id } } },
-    select: { id: true },
-  });
-  if (existing) return existing;
-  const created = await deps.prisma.thread.create({
-    data: {
-      spaceId: routine.spaceId,
-      userId: routine.userId,
-      // No botId: the bot's own thread is unique and must stay its conversation.
-      routines: { connect: { id: routine.id } },
-    },
-    select: { id: true },
-  });
-  return created;
-}
-
 export async function deferFutureRoutine(
   jobs: JobPublisher,
   routineId: string,
@@ -3444,11 +3415,9 @@ export function createRunExecutor(deps: ExecutorDeps) {
             select: { id: true },
           })
         : null;
-      const thread =
-        targetThread ??
-        (routine.threadMode === "background"
-          ? await routineBackgroundThread(deps, routine, bot)
-          : bot.thread);
+      // A background routine gets its own thread per run, created inside the claim
+      // transaction so a failed claim cannot leave an orphan thread behind.
+      const backgroundThread = routine.threadMode === "background";
       // A schedule with no valid parseable cron among its crons (e.g. a
       // legacy row accepted before cron validation was added) fires the
       // already-due run once, then nextRunAt stays null and the routine
@@ -3472,6 +3441,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
       const routinePrompt = guidance
         ? `${userPrompt}\n\nLearned guidance (version ${guidance.version}):\n${guidance.text}`
         : userPrompt;
+      let firedThreadId: string | undefined;
       const claimed = await deps.prisma.$transaction(async (tx) => {
         const updated = await tx.routine.updateMany({
           where: {
@@ -3493,6 +3463,24 @@ export function createRunExecutor(deps: ExecutorDeps) {
           select: { modelProvider: true, modelId: true, thinkingLevel: true },
         });
         if (!currentModel) return null;
+        // Coalesce overlapping schedule ticks after locking the routine row. The next
+        // tick is still scheduled below; no duplicate side effects accumulate behind a slow run.
+        const active = await tx.run.findFirst({
+          where: {
+            routineId: routine.id,
+            status: { in: ["queued", "leased", "running", "waiting_input", "waiting_takeover"] },
+          },
+          select: { id: true },
+        });
+        if (active) return { ...active, overlap: true as const };
+        const thread =
+          targetThread ??
+          (backgroundThread
+            ? await tx.thread.create({
+                data: { spaceId: routine.spaceId, userId: routine.userId, routineId: routine.id },
+              })
+            : bot.thread);
+        firedThreadId = thread.id;
         const task = await tx.task.create({
           data: {
             spaceId: routine.spaceId,
@@ -3519,6 +3507,18 @@ export function createRunExecutor(deps: ExecutorDeps) {
         });
       });
       if (!claimed) return;
+      if ("overlap" in claimed) {
+        // A tick that lands while the previous run is still working is dropped rather than
+        // queued behind it, so a slow routine cannot pile up duplicate side effects.
+        getLogger().info("routine.skipped", {
+          routineId,
+          activeRunId: claimed.id,
+          scheduledFor,
+          reason: "previous run active",
+        });
+        if (nextRunAt) await deps.jobs.enqueue(routineWakeupJob(routine.id, nextRunAt));
+        return;
+      }
       // Enqueue continuation first so a thread-signal failure cannot strand the run.
       try {
         await deps.jobs.enqueue(runContinueJob(claimed.id));
@@ -3549,7 +3549,7 @@ export function createRunExecutor(deps: ExecutorDeps) {
       try {
         await deps.events.append({
           spaceId: routine.spaceId,
-          threadId: thread.id,
+          threadId: firedThreadId ?? run.threadId,
           botId: bot.id,
           type: "routine.fired",
           runId: claimed.id,

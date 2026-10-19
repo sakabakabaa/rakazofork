@@ -2,7 +2,7 @@ import type { Actor } from "@rakazo/contracts";
 import { RoutineHistorySchema } from "@rakazo/contracts";
 import type { PrismaClient } from "@rakazo/db";
 import { describe, expect, it, vi } from "vitest";
-import { listRoutineRuns } from "./routine-runs.js";
+import { listRoutineRuns, routineOutput } from "./routine-runs.js";
 
 const actor: Actor = {
   userId: "user-1",
@@ -156,5 +156,61 @@ describe("routine history", () => {
       groupId: "group-1",
       messageId: "group-reply",
     });
+  });
+});
+
+describe("routine output isolation", () => {
+  it("rejects other owners before reading any transcript", async () => {
+    const messages = vi.fn();
+    const events = vi.fn();
+    const findFirst = vi.fn().mockResolvedValue(null);
+    const prisma = {
+      run: { findFirst },
+      message: { findMany: messages },
+      event: { findMany: events },
+    } as unknown as PrismaClient;
+    await expect(routineOutput(prisma, actor, "foreign-run")).rejects.toMatchObject({
+      code: "NOT_FOUND",
+    });
+    expect(findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          userId: actor.userId,
+          spaceId: actor.spaceId,
+          trigger: "routine",
+        }),
+      }),
+    );
+    expect(messages).not.toHaveBeenCalled();
+    expect(events).not.toHaveBeenCalled();
+  });
+  it("only reads the selected run, even when legacy runs share a chat", async () => {
+    const messages = vi.fn().mockResolvedValue([]);
+    const events = vi.fn().mockResolvedValue([]);
+    const prisma = {
+      run: {
+        findFirst: vi.fn().mockResolvedValue({
+          id: "run-1",
+          threadId: "shared-thread",
+          status: "completed",
+          error: null,
+        }),
+      },
+      message: { findMany: messages },
+      event: { findMany: events },
+    } as unknown as PrismaClient;
+    const output = await routineOutput(prisma, actor, "run-1", 25);
+    expect(output.messages).toEqual([]);
+    expect(messages).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { runId: "run-1", threadId: "shared-thread", seq: { lt: 25 } },
+        take: 101,
+      }),
+    );
+    expect(events).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { runId: "run-1", threadId: "shared-thread", spaceId: actor.spaceId },
+      }),
+    );
   });
 });
